@@ -23,6 +23,76 @@ def _get_col(df, *candidates, default=0):
             return df[c]
     return pd.Series(default, index=df.index, dtype="float64")
 
+def fetch_from_incrowd(season: int, competition_code: str, mode: str) -> pd.DataFrame:
+    """
+    Τραβάει JSON από το επίσημο feeds.incrowdsports.com (EuroLeague feed).
+    competition_code: 'E' για EuroLeague, 'U' για EuroCup (αν χρειαστεί).
+    mode: perGame | perMinute | accumulated
+    """
+    import requests, pandas as pd
+
+    base = "https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions"
+    season_code = f"{competition_code}{season}"  # π.χ. E2025
+
+    url = (
+        f"{base}/{competition_code}/statistics/players/traditional"
+        f"?seasonMode=Range&limit=1000&sortDirection=ascending"
+        f"&fromSeasonCode={season_code}&toSeasonCode={season_code}"
+        f"&statisticMode={mode}&statisticSortMode={mode}"
+    )
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json"
+    }
+    r = requests.get(url, headers=headers, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+
+    # Συνήθως τα rows είναι στη ρίζα σε key "players" ή παρόμοιο
+    rows = data.get("players", data)
+    df = pd.json_normalize(rows)
+
+    # Μικρή ονοματοδοσία για βασικά πεδία που βλέπω στο response σου
+    rename = {
+        "player.name": "Player",
+        "team.name": "Team",
+        "team.tvCodes": "TeamCode",
+        "minutesPlayed": "MIN",
+        "pointsScored": "PTS",
+        "assists": "AST",
+        "turnovers": "TOV",
+        "defensiveRebounds": "DREB",
+        "offensiveRebounds": "OREB",
+        "totalRebounds": "REB",
+        "threePointersMade": "3PM",
+        "threePointersAttempted": "3PA",
+        "twoPointersMade": "2PM",
+        "twoPointersAttempted": "2PA",
+        "freeThrowsMade": "FTM",
+        "freeThrowsAttempted": "FTA",
+        "foulsCommitted": "PF",
+        "steals": "STL",
+        "blocks": "BLK",
+        "gamesPlayed": "GP",
+        "gamesStarted": "GS",
+        "pir": "PIR",
+    }
+    df.rename(columns={k: v for k, v in rename.items() if k in df.columns}, inplace=True)
+
+    # Μετατρέπουμε ό,τι είναι ποσοστό σε αριθμό (χωρίς %)
+    for pct_col in [
+        "twoPointersPercentage", "threePointersPercentage", "freeThrowsPercentage"
+    ]:
+        if pct_col in df.columns:
+            df[pct_col] = (
+                df[pct_col].astype(str).str.replace("%", "", regex=False)
+            )
+            df[pct_col] = pd.to_numeric(df[pct_col], errors="coerce")
+
+    # Minutes πιθανόν έρχονται ήδη ως δεκαδικά (π.χ. 6.8333) – κρατάμε όπως είναι
+    return df
+
 def _fetch_table_with_playwright(url: str) -> pd.DataFrame:
     """
     Ανοίγει headless Chromium, φορτώνει τη σελίδα, περιμένει να εμφανιστεί ο πίνακας
