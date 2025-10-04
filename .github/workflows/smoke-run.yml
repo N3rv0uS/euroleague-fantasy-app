@@ -6,6 +6,7 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -18,22 +19,29 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests pandas
 
+      # ---- Κύριο diagnostic probe ----
       - name: Probe gamelogs endpoints (diagnostic)
         run: |
           python - << 'PY'
           import requests, pandas as pd
 
-          season_code = "E2025"
+          season_code = "E2025"  # άλλαξέ το αν χρειάζεται
           base = "https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions/E/statistics"
+
+          # 1) Συνήθη μονοπάτια για gamelogs (ένα row ανά παιχνίδι-παίκτη)
           endpoints = [
               f"{base}/games/players/traditional",
               f"{base}/players/traditional/games",
               f"{base}/players/games/traditional",
+              # και το players/traditional με split=ByGame (χωρίς playerCodes)
+              f"{base}/players/traditional",
           ]
+
+          # 2) Παραλλαγές παραμέτρων
           param_sets = [
               {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","limit":200,"statisticSortMode":"GameDate"},
               {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","limit":200},
-              {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","statisticSplitMode":"ByGame","limit":200},
+              {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","statisticSplitMode":"ByGame","limit":200},  # κρίσιμο για κάποια instances
           ]
 
           def find_rows(j):
@@ -47,9 +55,14 @@ jobs:
               return []
 
           ok = False
+          chosen = None
           for url in endpoints:
               for params in param_sets:
-                  r = requests.get(url, params=params, timeout=30)
+                  # ειδική περίπτωση: το plain players/traditional χρειάζεται συχνά split=ByGame
+                  p = dict(params)
+                  if url.endswith("/players/traditional") and "statisticSplitMode" not in p:
+                      p["statisticSplitMode"] = "ByGame"
+                  r = requests.get(url, params=p, timeout=30)
                   print("STATUS:", r.status_code, "URL:", r.url)
                   try:
                       j = r.json()
@@ -64,12 +77,15 @@ jobs:
                       print(df.head(5).to_string(index=False))
                       df.to_csv("tmp_out/gamelogs_probe.csv", index=False)
                       ok = True
+                      chosen = (url, p, len(df))
                       break
               if ok:
                   break
 
-          if not ok:
-              print("No rows from any endpoint/params variant.")
+          if ok:
+              print("[OK] Found working endpoint/params:", chosen)
+          else:
+              print("[FAIL] No rows from any endpoint/params variant.")
           PY
 
       - name: List outputs (if any)
