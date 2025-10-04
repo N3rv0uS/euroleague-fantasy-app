@@ -2,8 +2,12 @@ name: Refresh EuroLeague stats
 
 on:
   schedule:
-    - cron: "0 4 * * *"   # κάθε μέρα στις 04:00 UTC
-  workflow_dispatch:       # να μπορείς να το τρέξεις και χειροκίνητα
+    - cron: "0 4 * * *"   # καθημερινά στις 04:00 UTC
+  workflow_dispatch:       # χειροκίνητη εκτέλεση από το tab Actions
+
+# Δίνει δικαιώματα για commit/push με το GITHUB_TOKEN
+permissions:
+  contents: write
 
 jobs:
   fetch-and-commit:
@@ -13,22 +17,25 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          persist-credentials: true   # ώστε να δουλέψει το push με GITHUB_TOKEN
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Fetch stats
+      - name: Fetch stats (E2025, perGame)
         run: |
           mkdir -p out
           python fetch_euroleague_stats.py --seasons 2025 --mode perGame --out out/
+          echo "----- Listing out/ -----"
+          ls -l out || true
 
       - name: Commit CSV updates
         run: |
