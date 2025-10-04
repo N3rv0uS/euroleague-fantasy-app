@@ -368,14 +368,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--limit", type=int, default=1000, help="limit παραμέτρου για feed")
     return p.parse_args(argv)
 
+
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
 
     # seasons & players parsing
     seasons = [s.strip() for s in str(args.seasons).split(",") if s.strip()]
-    players_list = None
-    if getattr(args, "players", ""):
-        players_list = [p.strip() for p in str(args.players).split(",") if p.strip()]
+    players_list = [p.strip() for p in str(args.players).split(",") if p.strip()] if args.players else None
 
     for season in seasons:
         if args.kind == "season":
@@ -404,7 +403,11 @@ def main(argv: Optional[List[str]] = None) -> None:
             save_csv(df, out_path)
             print(f"[ok] Saved: {out_path} (rows={len(df)})")
 
+        else:
+            raise ValueError(f"Unknown kind: {args.kind}")
+
 
 if __name__ == "__main__":
     main()
+
 
