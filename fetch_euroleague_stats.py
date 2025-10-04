@@ -170,16 +170,18 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
     base = "https://api-live.euroleague.net"
     season_code = f"{competition_code}{season}"  # π.χ. E2025
 
-    # Λίστα από υποψήφια endpoints/queries (δοκιμάζονται σειριακά)
     candidates = [
-        # 1) seasonCode (το πιο σύγχρονο)
-        (f"{base}/v1/players/stats?seasonCode={season_code}&competitionCode={competition_code}&statisticMode={mode}&size=10000", {}),
-        # 2) range (from/to) για μία σεζόν
-        (f"{base}/v1/players/stats?seasonMode=Range&fromSeasonCode={season_code}&toSeasonCode={season_code}"
-         f"&competitionCode={competition_code}&statisticMode={mode}&size=10000", {}),
-        # 3) παλιό pattern (backup)
-        (f"{base}/v1/players/stats?season={season}&competitionCode={competition_code}&statisticMode={mode}", {}),
+    # 1) range (from/to) για μία σεζόν (το πιο σίγουρο)
+    (f"{base}/v1/players/stats?seasonMode=Range&fromSeasonCode={season_code}&toSeasonCode={season_code}"
+     f"&competitionCode={competition_code}&statisticMode={mode}&size=10000", {}),
+
+    # 2) seasonCode (μερικές φορές δουλεύει)
+    (f"{base}/v1/players/stats?seasonCode={season_code}&competitionCode={competition_code}&statisticMode={mode}&size=10000", {}),
+
+    # 3) παλιό pattern (backup)
+    (f"{base}/v1/players/stats?season={season}&competitionCode={competition_code}&statisticMode={mode}", {}),
     ]
+
 
     last_err = None
     for url, headers in candidates:
