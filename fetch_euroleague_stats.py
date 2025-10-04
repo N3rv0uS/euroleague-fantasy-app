@@ -380,17 +380,21 @@ def main(argv: Optional[List[str]] = None) -> None:
             save_csv(df, out_path)
             print(f"[ok] Saved: {out_path} (rows={len(df)})")
 
-        elif args.kind == "gamelogs":
-            df = fetch_all_player_gamelogs(
-                season=season,
-                competition=args.competition,
-                mode=args.mode,
-                player_codes=players_list,
-                master_limit=args.limit,
-            )
-            out_path = os.path.join(args.out, f"player_gamelogs_{season}_{args.mode}.csv")
-            save_csv(df, out_path)
-            print(f"[ok] Saved: {out_path} (rows={len(df)})")
+     elif args.kind == "gamelogs":
+    print(f"[info] Start gamelogs for season={season}, competition={args.competition}, mode={args.mode}")
+    df = fetch_all_player_gamelogs(
+        season=season,
+        competition=args.competition,
+        mode=args.mode,
+        player_codes=players_list,
+        master_limit=args.limit,
+    )
+    if df.empty:
+        print("[warn] gamelogs came back EMPTY. Check endpoint availability and params.", file=sys.stderr)
+    out_path = os.path.join(args.out, f"player_gamelogs_{season}_{args.mode}.csv")
+    save_csv(df, out_path)
+    print(f"[ok] Saved: {out_path} (rows={len(df)})")
+
 
 if __name__ == "__main__":
     main()
