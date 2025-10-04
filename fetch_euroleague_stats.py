@@ -55,39 +55,77 @@ def fetch_all_player_gamelogs(
     mode: str = "perGame",
     player_codes: Optional[Iterable[str]] = None,
     master_limit: int = 1000,
-    max_workers: int = 8,              # <= 8 για να είμαστε «ευγενικοί»
-    only_active: bool = True,          # φίλτρο παικτών με παιχνίδια
+    max_workers: int = 8,
+    only_active: bool = True,
 ) -> pd.DataFrame:
+    """
+    1) Πρώτα δοκιμάζουμε single-call (games→players).
+    2) Αν βγει κενό, fallback: loop σε playerCodes (παλιή μέθοδος).
+    """
 
+    # --- 1) Single-call attempt ---
+    print("[info] Trying single-call gamelogs ...")
+    df_single = fetch_all_gamelogs_single_call(season, competition, mode)
+    if not df_single.empty:
+        print(f"[ok] Single-call returned rows={len(df_single)}")
+        return df_single
+
+    print("[warn] Single-call returned empty. Falling back to per-player loop.")
+
+    # --- 2) Fallback: per-player loop ---
     if player_codes is None:
         master_df = fetch_season_averages(season=season, competition=competition, mode=mode, limit=master_limit)
 
-        # Βρες στήλη με player codes
-        cand = [c for c in master_df.columns if c.endswith("player.code") or c.endswith("player_code") or c == "player_code" or c == "code"]
-        if not cand:
-            raise ValueError("Δεν βρέθηκε στήλη με player code στο master feed.")
-        code_col = cand[0]
+        # Στήλη με player_code: στο δικό σου CSV είναι *ακριβώς* "player_code"
+        if "player_code" in master_df.columns:
+            code_col = "player_code"
+        else:
+            cand = [c for c in master_df.columns if c.endswith("player.code") or c.endswith("player_code") or c == "code"]
+            if not cand:
+                raise ValueError("Δεν βρέθηκε στήλη με player code στο master feed.")
+            code_col = cand[0]
 
-        # Προαιρετικά: φίλτρο «μόνο ενεργοί»
         if only_active:
-            # Πιθανές στήλες για games played
-            gcols = [c for c in master_df.columns if "game" in c.lower() and "played" in c.lower()] or \
-                    [c for c in master_df.columns if c.lower() in ("gp","games","gamesplayed","statistics_games")]
-            if gcols:
-                gp_col = gcols[0]
-                try:
-                    master_df = master_df[pd.to_numeric(master_df[gp_col], errors="coerce").fillna(0) > 0]
-                except Exception:
-                    pass  # αν δεν γίνεται numeric, αγνόησέ το
+            # gamesPlayed υπάρχει στα season averages που έδειξες
+            gp_candidates = [c for c in ["gamesPlayed","GP","games","statistics_games"] if c in master_df.columns]
+            if gp_candidates:
+                gp_col = gp_candidates[0]
+                master_df = master_df[pd.to_numeric(master_df[gp_col], errors="coerce").fillna(0) > 0]
 
         player_codes = (
             master_df[[code_col]].dropna().drop_duplicates().astype(str)[code_col].tolist()
         )
 
-    # ---- Παράλληλη εκτέλεση
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     frames: List[pd.DataFrame] = []
     total = len(player_codes)
-    print(f"[info] Fetching gamelogs for {total} players (max_workers={max_workers})")
+    print(f"[info] Fallback: fetching gamelogs per player for {total} players ...")
+
+    def _one(pcode: str) -> pd.DataFrame:
+        return fetch_player_games(player_code=pcode, season=season, competition=competition, mode=mode)
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(_one, p): p for p in player_codes}
+        for fut in as_completed(futs):
+            p = futs[fut]
+            try:
+                dfi = fut.result()
+                if not dfi.empty:
+                    frames.append(dfi)
+            except Exception as e:
+                print(f"[warn] gamelog failed for {p}: {e}", file=sys.stderr)
+            done += 1
+            if done % 10 == 0 or done == total:
+                print(f"[progress] {done}/{total}")
+
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    for col, val in [("season", season), ("competition", competition), ("mode", mode)]:
+        if col not in out.columns:
+            out[col] = val
+    print(f"[info] Fallback collected rows={len(out)}")
+    return out
+
 
     def _one(code: str) -> pd.DataFrame:
         df_i = fetch_player_games(player_code=code, season=season, competition=competition, mode=mode)
