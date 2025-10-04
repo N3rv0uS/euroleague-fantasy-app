@@ -168,7 +168,8 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
             last_err = e
             print(f"⚠️ API attempt failed: {e}")
 
-    # (B) Fallback: scrape από expanded page
+    # ---------- (B) Fallback: scrape από expanded page ----------
+    base_web = "https://www.euroleaguebasketball.net/en/euroleague/stats/expanded/"
     web_url = (
         f"{base_web}?size=1000&viewType=traditional"
         f"&seasonMode=Range&statisticMode={mode}"
@@ -177,71 +178,75 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
     )
     try:
         print(f"🔎 Fallback to HTML table: {web_url}")
-        # Διαβάζουμε με 2 parsers για σιγουριά (lxml, html5lib)
+
+        # 1) Κατέβασε HTML με "κανονικά" headers
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.euroleaguebasketball.net/",
+        }
+        r = requests.get(web_url, headers=headers, timeout=60)
+        r.raise_for_status()
+        html = r.text
+        print("   → downloaded HTML length:", len(html))
+
+        # 2) Πρώτη προσπάθεια: pandas.read_html πάνω στο κείμενο (lxml -> html5lib)
         try:
-            tables = pd.read_html(web_url, flavor="lxml")
+            tables = pd.read_html(html, flavor="lxml")
         except Exception:
-            tables = pd.read_html(web_url, flavor="html5lib")
+            tables = pd.read_html(html, flavor="html5lib")
 
-        if not tables:
-            print("⚠️ No tables found on expanded page")
-            return pd.DataFrame()
+        if tables:
+            df = tables[0].copy()
+            print(f"✅ read_html found table: {df.shape}")
+        else:
+            # 3) Δεύτερη προσπάθεια: εντόπισε <table> με BeautifulSoup και δώστο στην read_html
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "lxml")
+            table = soup.find("table")
+            if table is None:
+                # δοκίμασε και με html5lib parser
+                soup = BeautifulSoup(html, "html5lib")
+                table = soup.find("table")
 
-        df = tables[0].copy()
-        print(f"✅ Scraped HTML table with shape: {df.shape}")
+            if table is None:
+                print("⚠️ No <table> tag found after BeautifulSoup parsing")
+                return pd.DataFrame()
 
-        # Καθαρισμός κεφαλίδων
+            df = pd.read_html(str(table))[0]
+            print(f"✅ BeautifulSoup + read_html found table: {df.shape}")
+
+        # ---- Κανονικοποίηση κεφαλίδων & τιμών ----
+        import re
         df.columns = [re.sub(r"\s+", " ", str(c)).strip() for c in df.columns]
-        if df.columns[0].strip().lower() in {"#", "unnamed: 0"}:
+        if df.columns and df.columns[0].strip().lower() in {"#", "unnamed: 0"}:
             df = df.iloc[:, 1:]
 
-        # Map Ελληνικά -> Αγγλικά (όπου υπάρχουν)
-        colmap_el_to_en = {
-            "Παίκτης": "Player",
-            "Ομάδα": "Team",
-            "Αγώνες": "GP",
-            "Λεπτά": "MIN",
-            "Πόντοι": "PTS",
-            "Επιθετικά Ριμπάουντ": "OREB",
-            "Αμυντικά Ριμπάουντ": "DREB",
-            "Συνολικά Ριμπάουντ": "REB",
-            "Ασίστ": "AST",
-            "Κλεψίματα": "STL",
-            "Κοψίματα": "BLK",
-            "Λάθη": "TOV",
-            "Φάουλ": "PF",
-        }
-        df.rename(columns={k: v for k, v in colmap_el_to_en.items() if k in df.columns}, inplace=True)
-
-        # Μετατροπή "Λεπτά" mm:ss -> MIN (float)
+        # Minutes: mm:ss -> δεκαδικά λεπτά
         if "MIN" in df.columns and df["MIN"].dtype == object:
             def _mmss_to_min(x):
                 s = str(x).strip()
                 if ":" in s:
                     parts = s.split(":")
-                    if len(parts) >= 2:
-                        try:
-                            return int(parts[0]) + int(parts[1]) / 60.0
-                        except:
-                            return None
+                    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                        return int(parts[0]) + int(parts[1]) / 60.0
                 try:
                     return float(s.replace(",", "."))
                 except:
                     return None
             df["MIN"] = df["MIN"].apply(_mmss_to_min)
 
-        # Αφαίρεση % και , → . σε αριθμούς
+        # Αφαίρεσε % και μετέτρεψε όπου γίνεται σε αριθμούς
         for col in df.columns:
             if df[col].dtype == object:
                 df[col] = (
-                    df[col]
-                    .astype(str)
+                    df[col].astype(str)
                     .str.replace("%", "", regex=False)
                     .str.replace(",", ".", regex=False)
                 )
                 df[col] = pd.to_numeric(df[col], errors="ignore")
 
-        # Εξασφάλιση βασικών στηλών
+        # Βασικές στήλες για να μην “σπάνε” τα metrics
         for need in ["Player", "Team", "GP", "MIN", "PTS", "AST", "TOV", "REB"]:
             if need not in df.columns:
                 df[need] = pd.NA
@@ -251,6 +256,7 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
     except Exception as e:
         print(f"❌ HTML scrape failed: {e}")
         return pd.DataFrame()
+
 
 
 # ---------------- Write outputs ----------------
