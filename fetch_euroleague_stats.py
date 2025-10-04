@@ -5,6 +5,7 @@ import time
 import sys
 import csv
 from typing import Iterable, List, Optional, Dict, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import pandas as pd
 
@@ -15,6 +16,71 @@ DEFAULT_HEADERS = {
     # πρόσθεσε headers αν ποτέ χρειαστεί (π.χ. User-Agent)
     "Accept": "application/json, text/plain, */*",
 }
+
+def fetch_all_player_gamelogs(
+    season: str,
+    competition: str = "E",
+    mode: str = "perGame",
+    player_codes: Optional[Iterable[str]] = None,
+    master_limit: int = 1000,
+    max_workers: int = 8,              # <= 8 για να είμαστε «ευγενικοί»
+    only_active: bool = True,          # φίλτρο παικτών με παιχνίδια
+) -> pd.DataFrame:
+
+    if player_codes is None:
+        master_df = fetch_season_averages(season=season, competition=competition, mode=mode, limit=master_limit)
+
+        # Βρες στήλη με player codes
+        cand = [c for c in master_df.columns if c.endswith("player.code") or c.endswith("player_code") or c == "player_code" or c == "code"]
+        if not cand:
+            raise ValueError("Δεν βρέθηκε στήλη με player code στο master feed.")
+        code_col = cand[0]
+
+        # Προαιρετικά: φίλτρο «μόνο ενεργοί»
+        if only_active:
+            # Πιθανές στήλες για games played
+            gcols = [c for c in master_df.columns if "game" in c.lower() and "played" in c.lower()] or \
+                    [c for c in master_df.columns if c.lower() in ("gp","games","gamesplayed","statistics_games")]
+            if gcols:
+                gp_col = gcols[0]
+                try:
+                    master_df = master_df[pd.to_numeric(master_df[gp_col], errors="coerce").fillna(0) > 0]
+                except Exception:
+                    pass  # αν δεν γίνεται numeric, αγνόησέ το
+
+        player_codes = (
+            master_df[[code_col]].dropna().drop_duplicates().astype(str)[code_col].tolist()
+        )
+
+    # ---- Παράλληλη εκτέλεση
+    frames: List[pd.DataFrame] = []
+    total = len(player_codes)
+    print(f"[info] Fetching gamelogs for {total} players (max_workers={max_workers})")
+
+    def _one(code: str) -> pd.DataFrame:
+        df_i = fetch_player_games(player_code=code, season=season, competition=competition, mode=mode)
+        return df_i
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_one, p): p for p in player_codes}
+        done = 0
+        for fut in as_completed(futures):
+            p = futures[fut]
+            try:
+                df_i = fut.result()
+                if not df_i.empty:
+                    frames.append(df_i)
+            except Exception as e:
+                print(f"[warn] Fail for player_code={p}: {e}", file=sys.stderr)
+            done += 1
+            if done % 10 == 0 or done == total:
+                print(f"[progress] {done}/{total} players")
+
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    for col, val in [("season", season), ("competition", competition), ("mode", mode)]:
+        if col not in out.columns:
+            out[col] = val
+    return out
 
 
 def _request_json(url: str, params: Dict[str, Any], max_retries: int = 2, timeout: float = 15.0, sleep_sec: float = 1.0) -> Dict[str, Any]:
