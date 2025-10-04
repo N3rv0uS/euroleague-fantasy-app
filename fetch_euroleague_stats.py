@@ -16,6 +16,38 @@ DEFAULT_HEADERS = {
     # πρόσθεσε headers αν ποτέ χρειαστεί (π.χ. User-Agent)
     "Accept": "application/json, text/plain, */*",
 }
+def fetch_all_gamelogs_single_call(
+    season: str,
+    competition: str = "E",
+    mode: str = "perGame",
+    limit: int = 100000,
+) -> pd.DataFrame:
+    """
+    Προσπαθεί να φέρει ΟΛΑ τα player-game rows με ΕΝΑ call.
+    Σε πολλά Incrowd setups υπάρχει το pattern:
+      /statistics/games/players/traditional
+    Αν δεν επιστρέψει τίποτα, γυρνάει κενό DF (και θα πέσουμε σε fallback).
+    """
+    url = f"https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions/{competition}/statistics/games/players/traditional"
+    params = {
+      "seasonMode": "Range",
+      "fromSeasonCode": _season_code(competition, season),
+      "toSeasonCode": _season_code(competition, season),
+      "statisticMode": mode,
+      "limit": limit,
+      # "statisticSortMode": "GameDate",  # optional
+    }
+    try:
+        payload = _request_json(url, params)
+        df = _json_to_df(payload)
+        if not df.empty:
+            df["season"] = season
+            df["competition"] = competition
+            df["mode"] = mode
+        return df
+    except Exception as e:
+        print(f"[info] single-call gamelogs endpoint not available or failed: {e}", file=sys.stderr)
+        return pd.DataFrame()
 
 def fetch_all_player_gamelogs(
     season: str,
