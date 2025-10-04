@@ -1,0 +1,6 @@
+pandas
+requests
+openpyxl
+sqlite-utils
+streamlit
+euroleague-api
