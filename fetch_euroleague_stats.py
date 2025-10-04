@@ -162,43 +162,40 @@ def fetch_with_package(season: int, competition_code: str, mode: str) -> pd.Data
 
 def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd.DataFrame:
     """
-    Fallback: δοκιμάζει σύγχρονα patterns των EuroLeague API endpoints.
-    Χρησιμοποιεί seasonCode=E{season} ή range (fromSeasonCode/toSeasonCode) και normalizes JSON -> DataFrame.
+    Χρησιμοποιεί το ίδιο endpoint με το site (stats/expanded).
     """
     import requests, pandas as pd
 
-    base = "https://api-live.euroleague.net"
+    base = "https://www.euroleaguebasketball.net/el/euroleague/stats/expanded/"
     season_code = f"{competition_code}{season}"  # π.χ. E2025
 
-    candidates = [
-    # 1) range (from/to) για μία σεζόν (το πιο σίγουρο)
-    (f"{base}/v1/players/stats?seasonMode=Range&fromSeasonCode={season_code}&toSeasonCode={season_code}"
-     f"&competitionCode={competition_code}&statisticMode={mode}&size=10000", {}),
+    url = (
+        f"{base}?size=1000&viewType=traditional"
+        f"&seasonMode=Range"
+        f"&statisticMode={mode}"
+        f"&fromSeasonCode={season_code}&toSeasonCode={season_code}"
+        f"&sortDirection=ascending&statistic="
+    )
 
-    # 2) seasonCode (μερικές φορές δουλεύει)
-    (f"{base}/v1/players/stats?seasonCode={season_code}&competitionCode={competition_code}&statisticMode={mode}&size=10000", {}),
+    print("🔎 Trying URL:", url)
 
-    # 3) παλιό pattern (backup)
-    (f"{base}/v1/players/stats?season={season}&competitionCode={competition_code}&statisticMode={mode}", {}),
-    ]
+    r = requests.get(url, timeout=60)
+    print("🔎 Status code:", r.status_code)
+    print("🔎 Response snippet:", r.text[:500])  # δείξε πρώτα 500 χαρακτήρες
 
-
-    last_err = None
-    for url, headers in candidates:
-        try:
-            r = requests.get(url, headers=headers, timeout=60)
-            r.raise_for_status()
-            data = r.json()
-            rows = data.get("data", data)
-            df = pd.json_normalize(rows)
-            if len(df) == 0:
-                continue
+    # Πολλές φορές το response είναι JSON (αν το καλέσεις απευθείας με headers)
+    try:
+        data = r.json()
+        rows = data.get("data", data)
+        df = pd.json_normalize(rows)
+        if len(df) > 0:
             return df
-        except Exception as e:
-            last_err = e
-            continue
+    except Exception as e:
+        print("⚠️ JSON decode failed:", e)
 
-    raise RuntimeError(f"Raw HTTP fallback failed for season {season}: {last_err}")
+    # Αν δεν είναι JSON, γύρισε empty DataFrame
+    return pd.DataFrame()
+
 
 
 def write_outputs(df: pd.DataFrame, season: int, mode: str, out_dir: str):
