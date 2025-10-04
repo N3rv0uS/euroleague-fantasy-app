@@ -23,6 +23,45 @@ def _get_col(df, *candidates, default=0):
             return df[c]
     return pd.Series(default, index=df.index, dtype="float64")
 
+def _fetch_table_with_playwright(url: str) -> pd.DataFrame:
+    """
+    Ανοίγει headless Chromium, φορτώνει τη σελίδα, περιμένει να εμφανιστεί ο πίνακας
+    και επιστρέφει DataFrame από το πρώτο <table>.
+    """
+    from playwright.sync_api import sync_playwright
+    import pandas as pd
+    from bs4 import BeautifulSoup
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            locale="en-US"
+        )
+        page = context.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+
+        # περιμένουμε να φορτώσει ο πίνακας (δοκίμασε για <table>)
+        try:
+            page.wait_for_selector("table", timeout=120_000)
+        except Exception:
+            # μερικές φορές αργεί – κάνε λίγο scroll/αναμονή
+            page.wait_for_timeout(3000)
+
+        html = page.content()
+        browser.close()
+
+    # Ανάλυση HTML με BeautifulSoup και μετατροπή σε DF
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table")
+    if table is None:
+        soup = BeautifulSoup(html, "html5lib")
+        table = soup.find("table")
+    if table is None:
+        return pd.DataFrame()
+
+    df = pd.read_html(str(table))[0]
+    return df
 
 def add_advanced_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """
