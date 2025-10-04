@@ -9,11 +9,33 @@ import requests
 import pandas as pd
 
 BASE_URL = "https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions/{competition}/statistics/players/traditional"
-
+# πάνω-πάνω, global
+_SESSION = requests.Session()
 DEFAULT_HEADERS = {
     # πρόσθεσε headers αν ποτέ χρειαστεί (π.χ. User-Agent)
     "Accept": "application/json, text/plain, */*",
 }
+
+
+def _request_json(url: str, params: Dict[str, Any], max_retries: int = 2, timeout: float = 15.0, sleep_sec: float = 1.0) -> Dict[str, Any]:
+    last_exc = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = _SESSION.get(url, params=params, headers=DEFAULT_HEADERS, timeout=timeout)
+            # 429: rate limit → κάνε ευγενική παύση & ξαναπροσπάθησε
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", "20"))
+                time.sleep(max(retry_after, 20))
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            last_exc = e
+            if attempt < max_retries:
+                time.sleep(sleep_sec * attempt)  # simple backoff
+            else:
+                raise
+    raise last_exc if last_exc else RuntimeError("Unknown request error")
 
 # ---------- helpers ----------
 
