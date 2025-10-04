@@ -370,31 +370,41 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
-    seasons = [s.strip() for s in args.seasons.split(",") if s.strip()]
-    players_list = [p.strip() for p in args.players.split(",") if p.strip()] if args.players else None
+
+    # seasons & players parsing
+    seasons = [s.strip() for s in str(args.seasons).split(",") if s.strip()]
+    players_list = None
+    if getattr(args, "players", ""):
+        players_list = [p.strip() for p in str(args.players).split(",") if p.strip()]
 
     for season in seasons:
-         if args.kind == "season":
-            df = fetch_season_averages(season=season, competition=args.competition, mode=args.mode, limit=args.limit)
+        if args.kind == "season":
+            df = fetch_season_averages(
+                season=season,
+                competition=args.competition,
+                mode=args.mode,
+                limit=args.limit,
+            )
             out_path = os.path.join(args.out, f"players_{season}_{args.mode}.csv")
             save_csv(df, out_path)
             print(f"[ok] Saved: {out_path} (rows={len(df)})")
 
-         elif args.kind == "gamelogs":
+        elif args.kind == "gamelogs":
             print(f"[info] Start gamelogs for season={season}, competition={args.competition}, mode={args.mode}")
             df = fetch_all_player_gamelogs(
-            season=season,
-            competition=args.competition,
-            mode=args.mode,
-            player_codes=players_list,
-            master_limit=args.limit,
+                season=season,
+                competition=args.competition,
+                mode=args.mode,
+                player_codes=players_list,
+                master_limit=args.limit,
             )
-    if df.empty:
-        print("[warn] gamelogs came back EMPTY. Check endpoint availability and params.", file=sys.stderr)
-    out_path = os.path.join(args.out, f"player_gamelogs_{season}_{args.mode}.csv")
-    save_csv(df, out_path)
-    print(f"[ok] Saved: {out_path} (rows={len(df)})")
+            if df.empty:
+                print("[warn] gamelogs came back EMPTY. Check endpoint availability and params.", file=sys.stderr)
+            out_path = os.path.join(args.out, f"player_gamelogs_{season}_{args.mode}.csv")
+            save_csv(df, out_path)
+            print(f"[ok] Saved: {out_path} (rows={len(df)})")
 
 
 if __name__ == "__main__":
     main()
+
