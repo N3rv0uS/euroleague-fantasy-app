@@ -1,4 +1,4 @@
-name: Smoke probe (games -> boxscore)
+name: Smoke run (gamelogs)
 
 on:
   workflow_dispatch:
@@ -9,132 +9,85 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install minimal deps
         run: |
           python -m pip install --upgrade pip
           pip install requests pandas
 
-      - name: Probe games list + one boxscore
+      - name: Probe gamelogs endpoints (diagnostic)
         run: |
           python - << 'PY'
-          import requests, pandas as pd, json, sys
+          import requests, pandas as pd, os
 
-          COMP = "E"
-          SEASON_CODE = "E2025"
-          BASE = f"https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions/{COMP}"
+          season_code = "E2025"  # άλλαξέ το αν χρειάζεται
+          base = "https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions/E/statistics"
 
-          def try_get(urls, params_list):
-              for u in urls:
-                  for p in params_list:
-                      try:
-                          r = requests.get(u, params=p, timeout=30)
-                          print("TRY:", r.status_code, r.url)
-                          j = None
-                          try:
-                              j = r.json()
-                          except Exception as e:
-                              print("JSON error:", e)
-                              continue
-                          if isinstance(j, dict):
-                              for k in ("items","data","rows","list"):
-                                  if isinstance(j.get(k), list) and len(j[k])>0:
-                                      return j[k], {"url": r.url, "params": p, "container": k}
-                          if isinstance(j, list) and len(j)>0:
-                              return j, {"url": r.url, "params": p, "container": "list"}
-                      except Exception as e:
-                          print("ERR:", e)
-              return None, None
-
-          # 1) GAMES LIST candidates
-          games_urls = [
-              f"{BASE}/games",                  # συχνό
-              f"{BASE}/schedules/games",        # εναλλακτικό
-              f"{BASE}/fixtures/games",         # εναλλακτικό
-          ]
-          games_params = [
-              {"seasonMode":"Range","fromSeasonCode":SEASON_CODE,"toSeasonCode":SEASON_CODE,"limit":200},
-              {"seasonCode":SEASON_CODE,"limit":200},
-            # πιθανές έξτρα παράμετροι αν χρειαστούν (phase/range):
-              {"seasonMode":"Range","fromSeasonCode":SEASON_CODE,"toSeasonCode":SEASON_CODE,"phaseType":"RS","limit":200},
+          # Πιθανά endpoints για "ένα row ανά παιχνίδι-παίκτη"
+          endpoints = [
+              f"{base}/games/players/traditional",
+              f"{base}/players/traditional/games",
+              f"{base}/players/games/traditional",
+              f"{base}/players/traditional",  # με split=ByGame
           ]
 
-          print("=== PROBE GAMES LIST ===")
-          games, meta_games = try_get(games_urls, games_params)
-          if not games:
-              print("[FAIL] No games list from any candidate.")
-              sys.exit(0)
-
-          print("[OK] games list found:", meta_games["url"])
-          print("Sample game keys:", list(games[0].keys()))
-
-          # από τα games ψάχνουμε πιθανό πεδίο για game identifier
-          def pick_game_code(g):
-              for k in ("gameCode","code","id","gameId"):
-                  if k in g: return k
-              # μερικές φορές nested
-              for k in g.keys():
-                  v = g[k]
-                  if isinstance(v, dict):
-                      for kk in ("code","id"):
-                          if kk in v: return f"{k}.{kk}"
-              return None
-
-          code_key = pick_game_code(games[0])
-          if not code_key:
-              print("[WARN] Couldn't detect game code field. First game:", games[0])
-              sys.exit(0)
-
-          # πάρε 1-2 game codes
-          def get_val(d, path):
-              cur = d
-              for part in path.split("."):
-                  cur = cur.get(part, {}) if isinstance(cur, dict) else {}
-              return cur if not isinstance(cur, dict) else None
-
-          game_codes = []
-          for g in games:
-              val = get_val(g, code_key)
-              if val: game_codes.append(str(val))
-              if len(game_codes)>=2: break
-
-          print("Picked game code key:", code_key, "values:", game_codes)
-
-          # 2) BOX SCORE per game (players/traditional for the game)
-          box_urls = [
-              f"{BASE}/games/{{game}}/statistics/players/traditional",
-              f"{BASE}/statistics/games/{{game}}/players/traditional",
-              f"{BASE}/statistics/players/traditional/games/{{game}}",
-          ]
-          box_params = [
-              {"statisticMode":"perGame","limit":500},
-              {"limit":500},  # χωρίς mode
-              {"statisticSplitMode":"ByGame","limit":500}, # με split
+          # Παραλλαγές παραμέτρων
+          param_sets = [
+              {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","limit":200,"statisticSortMode":"GameDate"},
+              {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","limit":200},
+              {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","statisticSplitMode":"ByGame","limit":200},
           ]
 
-          found_df = None
-          for gc in game_codes:
-              print(f"=== PROBE BOX for game {gc} ===")
-              for bu in box_urls:
-                  u = bu.replace("{game}", gc)
-                  rows, meta = try_get([u], box_params)
+          def find_rows(j):
+              if isinstance(j, list): return j
+              if isinstance(j, dict):
+                  for k in ("items","data","rows","list"):
+                      v = j.get(k)
+                      if isinstance(v, list): return v
+                  for v in j.values():
+                      if isinstance(v, list): return v
+              return []
+
+          os.makedirs("tmp_out", exist_ok=True)
+          ok = False
+          chosen = None
+
+          for url in endpoints:
+              for params in param_sets:
+                  p = dict(params)
+                  # Αν είναι το plain players/traditional, συχνά χρειάζεται split=ByGame
+                  if url.endswith("/players/traditional") and "statisticSplitMode" not in p:
+                      p["statisticSplitMode"] = "ByGame"
+
+                  r = requests.get(url, params=p, timeout=30)
+                  print("STATUS:", r.status_code, "URL:", r.url)
+                  try:
+                      j = r.json()
+                  except Exception as e:
+                      print("JSON error:", e)
+                      continue
+
+                  rows = find_rows(j)
+                  print("ROWS:", len(rows))
                   if rows:
                       df = pd.json_normalize(rows, sep="_")
-                      print("[OK] boxscore via:", meta["url"])
-                      print("COLUMNS:", list(df.columns)[:15])
+                      print("COLUMNS(sample):", list(df.columns)[:12])
                       print(df.head(5).to_string(index=False))
-                      found_df = df
+                      df.to_csv("tmp_out/gamelogs_probe.csv", index=False)
+                      ok = True
+                      chosen = (url, p, len(df))
                       break
-              if found_df is not None:
+              if ok:
                   break
 
-          if found_df is None:
-              print("[FAIL] No boxscore endpoint worked.")
+          if ok:
+              print("[OK] Found working endpoint/params:", chosen)
           else:
-              found_df.to_csv("tmp_out/one_boxscore.csv", index=False)
-              print("[OK] Saved tmp_out/one_boxscore.csv rows=", len(found_df))
+              print("[FAIL] No rows from any endpoint/params variant.")
           PY
 
       - name: List outputs (if any)
