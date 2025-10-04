@@ -162,28 +162,42 @@ def fetch_with_package(season: int, competition_code: str, mode: str) -> pd.Data
 
 def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd.DataFrame:
     """
-    Ενδεικτικό fallback: Αν το παραπάνω package δεν παίζει.
-    Εδώ ΔΕΝ εγγυώμαι σταθερά endpoints (ενδέχεται να αλλάζουν).
+    Fallback: δοκιμάζει σύγχρονα patterns των EuroLeague API endpoints.
+    Χρησιμοποιεί seasonCode=E{season} ή range (fromSeasonCode/toSeasonCode) και normalizes JSON -> DataFrame.
     """
-    import requests
+    import requests, pandas as pd
 
-    # Παράδειγμα endpoint (μπορεί να χρειάζεται επικαιροποίηση):
-    # ΣΗΜΕΙΩΣΗ: Τα πραγματικά endpoints φαίνονται στο swagger: https://api-live.euroleague.net/swagger/index.html
-    # Κάποια συνηθισμένα paths (ενδέχεται να θέλουν headers/keys/CORS όταν δεν τρέχεις τοπικά):
     base = "https://api-live.euroleague.net"
-    # Αυτό είναι ενδεικτικό. Προσαρμόστε αν αλλάξει το API.
-    url = f"{base}/v1/players/stats?season={season}&competitionCode={competition_code}&statisticMode={mode}"
-    r = requests.get(url, timeout=60)
-    r.raise_for_status()
-    data = r.json()
+    season_code = f"{competition_code}{season}"  # π.χ. E2025
 
-    # Προσπάθεια ομαλοποίησης σε DataFrame
-    if isinstance(data, dict) and 'data' in data:
-        rows = data['data']
-    else:
-        rows = data
-    df = pd.json_normalize(rows)
-    return df
+    # Λίστα από υποψήφια endpoints/queries (δοκιμάζονται σειριακά)
+    candidates = [
+        # 1) seasonCode (το πιο σύγχρονο)
+        (f"{base}/v1/players/stats?seasonCode={season_code}&competitionCode={competition_code}&statisticMode={mode}&size=10000", {}),
+        # 2) range (from/to) για μία σεζόν
+        (f"{base}/v1/players/stats?seasonMode=Range&fromSeasonCode={season_code}&toSeasonCode={season_code}"
+         f"&competitionCode={competition_code}&statisticMode={mode}&size=10000", {}),
+        # 3) παλιό pattern (backup)
+        (f"{base}/v1/players/stats?season={season}&competitionCode={competition_code}&statisticMode={mode}", {}),
+    ]
+
+    last_err = None
+    for url, headers in candidates:
+        try:
+            r = requests.get(url, headers=headers, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            rows = data.get("data", data)
+            df = pd.json_normalize(rows)
+            if len(df) == 0:
+                continue
+            return df
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise RuntimeError(f"Raw HTTP fallback failed for season {season}: {last_err}")
+
 
 def write_outputs(df: pd.DataFrame, season: int, mode: str, out_dir: str):
     os.makedirs(out_dir, exist_ok=True)
