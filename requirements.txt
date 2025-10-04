@@ -5,3 +5,4 @@ sqlite-utils
 streamlit
 euroleague-api
 lxml
+html5lib
