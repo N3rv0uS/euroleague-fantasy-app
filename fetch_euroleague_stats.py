@@ -207,7 +207,7 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
             last_err = e
             print(f"⚠️ API attempt failed: {e}")
 
-    # ---------- (B) Fallback: scrape από expanded page ----------
+        # ---------- (B) Fallback: scrape από expanded page ----------
     base_web = "https://www.euroleaguebasketball.net/en/euroleague/stats/expanded/"
     web_url = (
         f"{base_web}?size=1000&viewType=traditional"
@@ -218,7 +218,6 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
     try:
         print(f"🔎 Fallback to HTML table: {web_url}")
 
-        # 1) Κατέβασε HTML με "κανονικά" headers
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
@@ -229,7 +228,7 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
         html = r.text
         print("   → downloaded HTML length:", len(html))
 
-        # 2) Πρώτη προσπάθεια: pandas.read_html πάνω στο κείμενο (lxml -> html5lib)
+        # 1η προσπάθεια: read_html πάνω στο HTML
         try:
             tables = pd.read_html(html, flavor="lxml")
         except Exception:
@@ -239,29 +238,19 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
             df = tables[0].copy()
             print(f"✅ read_html found table: {df.shape}")
         else:
-            # 3) Δεύτερη προσπάθεια: εντόπισε <table> με BeautifulSoup και δώστο στην read_html
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(html, "lxml")
-            table = soup.find("table")
-            if table is None:
-                # δοκίμασε και με html5lib parser
-                soup = BeautifulSoup(html, "html5lib")
-                table = soup.find("table")
-
-            if table is None:
-                print("⚠️ No <table> tag found after BeautifulSoup parsing")
+            print("ℹ️ No table via read_html — trying Playwright headless browser…")
+            df = _fetch_table_with_playwright(web_url)
+            if df is None or df.empty:
+                print("⚠️ Playwright also found no table.")
                 return pd.DataFrame()
+            print(f"✅ Playwright found table: {df.shape}")
 
-            df = pd.read_html(str(table))[0]
-            print(f"✅ BeautifulSoup + read_html found table: {df.shape}")
-
-        # ---- Κανονικοποίηση κεφαλίδων & τιμών ----
+        # --- normalize όπως πριν ---
         import re
         df.columns = [re.sub(r"\s+", " ", str(c)).strip() for c in df.columns]
         if df.columns and df.columns[0].strip().lower() in {"#", "unnamed: 0"}:
             df = df.iloc[:, 1:]
 
-        # Minutes: mm:ss -> δεκαδικά λεπτά
         if "MIN" in df.columns and df["MIN"].dtype == object:
             def _mmss_to_min(x):
                 s = str(x).strip()
@@ -275,7 +264,6 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
                     return None
             df["MIN"] = df["MIN"].apply(_mmss_to_min)
 
-        # Αφαίρεσε % και μετέτρεψε όπου γίνεται σε αριθμούς
         for col in df.columns:
             if df[col].dtype == object:
                 df[col] = (
@@ -285,7 +273,6 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
                 )
                 df[col] = pd.to_numeric(df[col], errors="ignore")
 
-        # Βασικές στήλες για να μην “σπάνε” τα metrics
         for need in ["Player", "Team", "GP", "MIN", "PTS", "AST", "TOV", "REB"]:
             if need not in df.columns:
                 df[need] = pd.NA
@@ -295,6 +282,7 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
     except Exception as e:
         print(f"❌ HTML scrape failed: {e}")
         return pd.DataFrame()
+
 
 
 
