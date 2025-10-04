@@ -1,0 +1,79 @@
+name: Smoke probe (bruteforce gamelogs)
+on: { workflow_dispatch: {} }
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas
+      - name: Try many endpoint/param combos
+        run: |
+          python - << 'PY'
+          import requests, pandas as pd, itertools
+          COMP="E"; SEASON="E2025"
+          base=f"https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions/{COMP}/statistics"
+          endpoints=[
+            f"{base}/players/traditional",
+            f"{base}/players/games/traditional",
+            f"{base}/players/traditional/games",
+            f"{base}/games/players/traditional",
+          ]
+          # πιθανές τιμές
+          sort_modes=[None,"GameDate"]
+          split_modes=[None,"ByGame","Game","ByGameTotals"]
+          phase_keys=[None, "phaseType", "competitionPhaseCodes"]
+          phase_vals=[None,"RS","PO", f"{SEASON}_RS", f"{SEASON}_PO"]
+          combos=[]
+          for e in endpoints:
+            for sm in sort_modes:
+              for sp in split_modes:
+                for pk in phase_keys:
+                  for pv in phase_vals:
+                    p={"seasonMode":"Range","fromSeasonCode":SEASON,"toSeasonCode":SEASON,"limit":200}
+                    p["statisticMode"]="perGame"
+                    if sm: p["statisticSortMode"]=sm
+                    if sp: p["statisticSplitMode"]=sp
+                    if pk and pv: p[pk]=pv
+                    # μην βάλεις playerCodes
+                    combos.append((e,p))
+          tried=set()
+          def rows_of(j):
+            if isinstance(j,list): return j
+            if isinstance(j,dict):
+              for k in ("items","data","rows","list"):
+                v=j.get(k); 
+                if isinstance(v,list): return v
+              for v in j.values():
+                if isinstance(v,list): return v
+            return []
+          found=0
+          for url,params in combos:
+            key=(url,tuple(sorted(params.items())))
+            if key in tried: continue
+            tried.add(key)
+            try:
+              r=requests.get(url,params=params,timeout=25)
+              print("TRY", r.status_code, r.url)
+              if r.status_code!=200: continue
+              try: j=r.json()
+              except: continue
+              rows=rows_of(j)
+              print("ROWS:", len(rows))
+              if rows:
+                df=pd.json_normalize(rows,sep="_")
+                print("[OK]", url, "cols:", list(df.columns)[:12])
+                df.to_csv("tmp_out/gamelogs_probe.csv", index=False)
+                found+=1
+                if found>=2: break
+            except Exception as e:
+              print("ERR", e)
+          if found==0: print("[FAIL] nothing worked")
+          PY
+      - name: List outputs
+        run: ls -lah tmp_out || true
