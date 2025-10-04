@@ -1,0 +1,27 @@
+name: Smoke run (tiny dataset)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      # Season: μικρό limit για γρήγορο run
+      - name: Season tiny
+        run: |
+          python fetch_euroleague_stats.py --kind season --seasons 2025 --competition E --mode perGame --limit 50 --out tmp_out/
+      # Gamelogs: 1-2 συγκεκριμένοι παίκτες για πολύ γρήγορο τεστ
+      - name: Gamelogs tiny (2 players)
+        run: |
+          python fetch_euroleague_stats.py --kind gamelogs --seasons 2025 --competition E --mode perGame --players 002661,011196 --out tmp_out/
+      - name: List outputs
+        run: ls -lh tmp_out || true
