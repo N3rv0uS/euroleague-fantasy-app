@@ -213,4 +213,163 @@ def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd
         }
         df.rename(columns={k: v for k, v in colmap_el_to_en.items() if k in df.columns}, inplace=True)
 
-        # Μετατροπή "Λεπτά" mm:ss -> MIN (
+        # Μετατροπή "Λεπτά" mm:ss -> MIN (float)
+        if "MIN" in df.columns and df["MIN"].dtype == object:
+            def _mmss_to_min(x):
+                s = str(x).strip()
+                if ":" in s:
+                    parts = s.split(":")
+                    if len(parts) >= 2:
+                        try:
+                            return int(parts[0]) + int(parts[1]) / 60.0
+                        except:
+                            return None
+                try:
+                    return float(s.replace(",", "."))
+                except:
+                    return None
+            df["MIN"] = df["MIN"].apply(_mmss_to_min)
+
+        # Αφαίρεση % και , → . σε αριθμούς
+        for col in df.columns:
+            if df[col].dtype == object:
+                df[col] = (
+                    df[col]
+                    .astype(str)
+                    .str.replace("%", "", regex=False)
+                    .str.replace(",", ".", regex=False)
+                )
+                df[col] = pd.to_numeric(df[col], errors="ignore")
+
+        # Εξασφάλιση βασικών στηλών
+        for need in ["Player", "Team", "GP", "MIN", "PTS", "AST", "TOV", "REB"]:
+            if need not in df.columns:
+                df[need] = pd.NA
+
+        return df
+
+    except Exception as e:
+        print(f"❌ HTML scrape failed: {e}")
+        return pd.DataFrame()
+
+
+# ---------------- Write outputs ----------------
+def write_outputs(df: pd.DataFrame, season: int, mode: str, out_dir: str):
+    if df is None or len(df) == 0:
+        print(f"⚠️ Empty DataFrame for season {season} — skipping write.")
+        return None, None, None
+
+    os.makedirs(out_dir, exist_ok=True)
+    csv_path = os.path.join(out_dir, f"players_{season}_{mode}.csv")
+    xlsx_path = os.path.join(out_dir, f"players_{season}_{mode}.xlsx")
+    db_path  = os.path.join(out_dir, "euroleague.db")
+
+    # Κανονικοποίηση aliases βασικών στηλών
+    colmap = {
+        "player_name": "Player",
+        "team_name": "Team",
+        "pts": "PTS",
+        "reb": "REB",
+        "ast": "AST",
+        "stl": "STL",
+        "blk": "BLK",
+        "min": "MIN",
+        "fg3m": "3PM",
+        "fg3a": "3PA",
+        "fg3pct": "3P%",
+        "fg2m": "2PM",
+        "fg2a": "2PA",
+        "fg2pct": "2P%",
+        "ftm": "FTM",
+        "fta": "FTA",
+        "ftpct": "FT%",
+        "oreb": "OREB",
+        "dreb": "DREB",
+        "tov": "TOV",
+        "pf": "PF",
+        "gp": "GP",
+        "gs": "GS",
+    }
+    for k, v in colmap.items():
+        if k in df.columns and v not in df.columns:
+            df[v] = df[k]
+
+    df.to_csv(csv_path, index=False)
+    try:
+        df.to_excel(xlsx_path, index=False)
+    except Exception:
+        pass
+
+    # SQLite (μόνο αν υπάρχουν στήλες)
+    try:
+        import sqlite3
+        con = sqlite3.connect(db_path)
+        df.to_sql("player_stats", con, if_exists="replace", index=False)
+        con.close()
+    except Exception as e:
+        print(f"⚠️ SQLite write skipped: {e}")
+
+    return csv_path, xlsx_path, db_path
+
+
+# ---------------- CLI ----------------
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seasons", nargs="+", type=int, help="Π.χ. 2025 2024", required=False)
+    parser.add_argument("--mode", type=str, default="perGame", choices=["perGame", "perMinute", "accumulated"])
+    parser.add_argument("--competition", type=str, default="E", help="E=EuroLeague, U=EuroCup")
+    parser.add_argument("--out", type=str, default="out", help="Φάκελος εξόδου")
+    parser.add_argument("--force-raw", action="store_true", help="Παράκαμψη βιβλιοθήκης και χρήση raw HTTP/scrape")
+    args = parser.parse_args()
+
+    # Φόρτωσε config αν δεν δοθούν seasons
+    cfg_path = "config.json"
+    if args.seasons is None and os.path.exists(cfg_path):
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        seasons     = cfg.get("seasons", [2025])
+        mode        = cfg.get("statistic_mode", args.mode)
+        competition = cfg.get("competition_code", args.competition)
+        out_dir     = cfg.get("output_dir", args.out)
+    else:
+        seasons     = args.seasons or [2025]
+        mode        = args.mode
+        competition = args.competition
+        out_dir     = args.out
+
+    used_raw = False
+    for season in seasons:
+        try:
+            if args.force_raw:
+                used_raw = True
+                df = fetch_with_raw_requests(season, competition, mode)
+            else:
+                try:
+                    df = fetch_with_package(season, competition, mode)
+                except Exception:
+                    used_raw = True
+                    df = fetch_with_raw_requests(season, competition, mode)
+        except Exception as e:
+            print(f"[Σφάλμα] Season {season}: {e}", file=sys.stderr)
+            continue
+
+        # Advanced metrics enrichment (best-effort)
+        try:
+            if df is not None and len(df) > 0:
+                df = add_advanced_metrics(df)
+        except Exception as _e:
+            print(f"[Προειδοποίηση] Advanced metrics: {_e}")
+
+        csv_path, xlsx_path, db_path = write_outputs(df, season, mode, out_dir)
+        if csv_path:
+            print(f"✔ Season {season}:")
+            print(f"  - CSV:  {csv_path}")
+            print(f"  - XLSX: {xlsx_path}")
+            print(f"  - DB:   {db_path}")
+
+    if used_raw:
+        print("\n(Χρησιμοποιήθηκε raw HTTP/scrape fallback — αν κάτι δεν κατέβηκε, έλεγξε endpoints/HTML.)")
+
+
+if __name__ == "__main__":
+    main()
