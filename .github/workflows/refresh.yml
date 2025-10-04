@@ -1,47 +1,49 @@
-name: Refresh EuroLeague stats
+name: Refresh EuroLeague Data
 
 on:
   schedule:
-    - cron: "0 4 * * *"
-  workflow_dispatch:
-
-permissions:
-  contents: write
+    - cron: "0 3 * * *"  # κάθε μέρα 03:00 UTC (ρύθμισέ το όπως θες)
+  workflow_dispatch: {}
 
 jobs:
-  fetch-and-commit:
+  refresh:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          # Εγκατάσταση Chromium για Playwright
-          python -m playwright install --with-deps chromium
+          pip install -r requirements.txt
 
-      - name: Fetch stats (EuroLeague E2025, perGame)
+      # (προαιρετικό) αν διαβάζεις STREAMLIT/SECRETS για password κ.λπ.
+      # - name: Prepare secrets
+      #   run: |
+      #     echo -e "[general]\npassword = \"${{ secrets.STREAMLIT_PASSWORD }}\"" > .streamlit/secrets.toml
+
+      - name: Fetch season averages
         run: |
-          mkdir -p out
-          python fetch_euroleague_stats.py --seasons 2025 --competition E --mode perGame --out out/ --force-raw
-          echo "----- Listing out/ -----"
-          ls -lh out || true
+          python fetch_euroleague_stats.py --kind season --seasons 2025 --competition E --mode perGame --out out/
 
-      - name: Commit CSV updates
+      - name: Fetch player gamelogs
+        run: |
+          python fetch_euroleague_stats.py --kind gamelogs --seasons 2025 --competition E --mode perGame --out out/
+
+      - name: Commit & push outputs
+        if: ${{ github.ref == 'refs/heads/main' }}
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add out/*.csv || true
-          git commit -m "Auto-refresh CSV (daily)" || echo "No changes to commit"
-          git push
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: refresh data (season & gamelogs)"
+            git push
+          else
+            echo "No changes to commit."
+          fi
