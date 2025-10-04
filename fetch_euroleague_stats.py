@@ -569,6 +569,12 @@ def main():
     parser.add_argument("--competition", type=str, default="E", help="E=EuroLeague, U=EuroCup")
     parser.add_argument("--out", type=str, default="out", help="Φάκελος εξόδου")
     parser.add_argument("--force-raw", action="store_true", help="Παράκαμψη βιβλιοθήκης και χρήση raw HTTP/scrape")
+    parser.add_argument("--kind", type=str, default="season",
+                    choices=["season", "gamelogs"],
+                    help="season: season averages | gamelogs: per-game stats")
+    parser.add_argument("--players", type=str, default="",
+                    help="Comma-separated player codes (π.χ. 002661,011196). Κενό = όλοι.")
+
     args = parser.parse_args()
 
     # Φόρτωσε config αν δεν δοθούν seasons
@@ -587,21 +593,48 @@ def main():
         out_dir     = args.out
 
     used_raw = False
-    for season in seasons:
-        try:
-            if args.force_raw:
-                used_raw = True
-                df = fetch_from_incrowd(season, competition, mode)
+  for season in seasons:
+    try:
+        if args.kind == "gamelogs":
+            if args.players.strip():
+                # συγκεκριμένοι παίκτες
+                codes = [c.strip() for c in args.players.split(",") if c.strip()]
+                frames = []
+                for code in codes:
+                    frames.append(fetch_player_games(code, season, competition, mode))
+                df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+                out_name = f"player_gamelogs_{season}_{mode}.csv"
             else:
-                try:
-                    df = fetch_with_package(season, competition, mode)
-                except Exception:
-                    used_raw = True
-                    df = fetch_from_incrowd(season, competition, mode)
+                # όλοι οι παίκτες
+                df = fetch_all_player_gamelogs(season, competition, mode)
+                out_name = f"player_gamelogs_{season}_{mode}.csv"
 
-        except Exception as e:
-            print(f"[Σφάλμα] Season {season}: {e}", file=sys.stderr)
-            continue
+            if df is None or df.empty:
+                print(f"[Προειδοποίηση] Κενό gamelogs για season {season}")
+                continue
+
+            os.makedirs(out_dir, exist_ok=True)
+            csv_path = os.path.join(out_dir, out_name)
+            df.to_csv(csv_path, index=False)
+            print(f"✔ Season {season} gamelogs -> {csv_path}")
+            continue  # πάμε επόμενη season
+
+        # --kind season (όπως πριν)
+        # εδώ βάλε ό,τι είχες (π.χ. fetch_from_incrowd για season averages)
+        df = fetch_from_incrowd(season, competition, mode)
+
+    except Exception as e:
+        print(f"[Σφάλμα] Season {season}: {e}", file=sys.stderr)
+        continue
+
+    # enrichment + write όπως ήδη κάνεις…
+    try:
+        df = add_advanced_metrics(df)
+    except Exception as _e:
+        print(f"[Προειδοποίηση] Advanced metrics: {_e}")
+    csv_path, xlsx_path, db_path = write_outputs(df, season, mode, out_dir)
+    print(f"✔ Season {season}:\n  - CSV: {csv_path}\n  - XLSX: {xlsx_path}\n  - DB: {db_path}")
+
 
         # Advanced metrics enrichment (best-effort)
         try:
