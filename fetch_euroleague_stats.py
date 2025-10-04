@@ -6,6 +6,8 @@ import sys
 import csv
 from typing import Iterable, List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+import re, requests, pandas as pd
 import requests
 import pandas as pd
 
@@ -17,6 +19,145 @@ DEFAULT_HEADERS = {
     "Accept": "application/json, text/plain, */*",
 }
 # -------- robust helpers for Incrowd variants --------
+# ----------------- CMS content gamelogs parser (no scraping) -----------------
+
+
+
+def _dig(d, path, default=None):
+    cur = d
+    for p in path.split("."):
+        if isinstance(cur, dict) and p in cur:
+            cur = cur[p]
+        elif isinstance(cur, list):
+            try:
+                i = int(p)
+                cur = cur[i]
+            except:
+                return default
+        else:
+            return default
+    return cur
+
+def _try_json(url: str, params: Optional[dict] = None, timeout: int = 30) -> dict:
+    r = requests.get(url, params=params, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+def parse_player_gamelogs_from_content(content_json: dict, player_code: Optional[str] = None) -> pd.DataFrame:
+    """
+    Παρσάρει τον πίνακα Game stats από το CMS JSON που φορτώνει το frontend.
+    Περιμένει δομή τύπου:
+      stats.currentSeason.gameStats[0].table.sections  (ανά κατηγορία)
+      stats.currentSeason.gameStats[0].table.headSection.stats  (meta ανά παιχνίδι: gameUrl, αντίπαλος κ.λπ.)
+
+    Επιστρέφει DF με ένα row ανά παιχνίδι και στήλες: MIN, PTS, 2FG, 3FG, FT, O, D, T, AST, STL, TOV,
+    BLK_FV, BLK_AG, FLS_CM, FLS_RV, PIR + game_url/opponent/home_away/game_date, player_code, game_no.
+    """
+    node = _dig(content_json, "stats.currentSeason.gameStats.0.table")
+    if node is None:
+        node = _dig(content_json, "gameStats.0.table")
+    if node is None:
+        return pd.DataFrame()
+
+    head_stats = _dig(node, "headSection.stats", [])
+    sections = node.get("sections", [])
+
+    sec_frames: List[pd.DataFrame] = []
+    for sec in sections:
+        rows = sec.get("rows") or sec.get("stats") or []
+        # header inference
+        header = []
+        for row in rows[:1]:
+            if isinstance(row, list):
+                for cell in row:
+                    if isinstance(cell, dict):
+                        k = cell.get("statType") or cell.get("label") or cell.get("type") or ""
+                        header.append(k)
+        if not header:
+            header = [c.get("statType") or c.get("key") or c.get("name") for c in sec.get("columns", [])]
+        data = []
+        for row in rows:
+            if isinstance(row, list):
+                data.append([cell.get("value") if isinstance(cell, dict) else cell for cell in row])
+        df = pd.DataFrame(data, columns=header if header and data else None)
+        df.insert(0, "__idx__", range(1, len(df) + 1))
+        df = df.loc[:, [c for c in df.columns if c == "__idx__" or (isinstance(c, str) and c)]]
+        sec_frames.append(df)
+
+    body = pd.DataFrame()
+    if sec_frames:
+        body = sec_frames[0]
+        for df in sec_frames[1:]:
+            body = body.merge(df, on="__idx__", how="outer")
+
+    meta_rows = []
+    for i, s in enumerate(head_stats, start=1):
+        if isinstance(s, dict):
+            game_url = s.get("gameUrl") or s.get("url") or s.get("href")
+            opp = s.get("opponent") or s.get("opponentName") or s.get("name")
+            home_away = s.get("homeAway") or s.get("location")
+            game_date = s.get("gameDate") or s.get("date")
+        else:
+            game_url = opp = home_away = game_date = None
+        meta_rows.append({
+            "__idx__": i,
+            "game_url": game_url, "opponent": opp, "home_away": home_away, "game_date": game_date
+        })
+    meta = pd.DataFrame(meta_rows)
+
+    out = meta.merge(body, on="__idx__", how="outer").sort_values("__idx__")
+    out["player_code"] = player_code
+    out["game_no"] = out["__idx__"]
+    out.drop(columns=["__idx__"], inplace=True, errors="ignore")
+
+    alias_map = {
+        "MIN": ["min","minutes","MIN","time","minutesPlayed"],
+        "PTS": ["pts","points","PTS","pointsScored"],
+        "2FG": ["2fg","twoPoints","twoPointers","twoPointersMadeAttempted","twoPointersShort","twoPointersText"],
+        "3FG": ["3fg","threePoints","threePointers","threePointersMadeAttempted","threePointersShort","threePointersText"],
+        "FT":  ["ft","freeThrows","freeThrowsMadeAttempted","freeThrowsShort","freeThrowsText"],
+        "O":   ["o","off","offensive","offensiveRebounds","reb_o","O"],
+        "D":   ["d","def","defensive","defensiveRebounds","reb_d","D"],
+        "T":   ["t","tot","total","totalRebounds","reb_t","T"],
+        "AST": ["as","ast","assists","AST"],
+        "STL": ["st","steals","STL"],
+        "TOV": ["to","turnovers","TOV"],
+        "BLK_FV": ["fv","blocksFor","blocksMade","blocks"],
+        "BLK_AG": ["ag","blocksAgainst","blocksReceived"],
+        "FLS_CM": ["cm","foulsCommitted","foulsCommited","foulsCommittedValue"],
+        "FLS_RV": ["rv","foulsDrawn","foulsReceived"],
+        "PIR": ["pir","indexRating","PIR"],
+    }
+
+    # rename όπου ταιριάζει
+    std_cols = {k: None for k in alias_map}
+    for std, keys in alias_map.items():
+        for k in list(out.columns):
+            if str(k).strip() in keys:
+                std_cols[std] = k
+                break
+    rename = {v: k for k,v in std_cols.items() if v}
+    out = out.rename(columns=rename)
+
+    # split made/attempts για 2FG/3FG/FT, αν είναι "x/y"
+    def split_made_att(s):
+        if isinstance(s, str) and "/" in s:
+            a,b = s.split("/", 1)
+            try: return float(a), float(b)
+            except: return a,b
+        return None,None
+
+    for cat in ["2FG","3FG","FT"]:
+        if cat in out.columns:
+            m,a = zip(*[split_made_att(x) for x in out[cat].tolist()])
+            out[f"{cat}_M"] = m; out[f"{cat}_A"] = a
+
+    # βεβαιώσου ότι υπάρχουν όλα τα standard cols
+    for c in alias_map.keys():
+        if c not in out.columns:
+            out[c] = pd.NA
+
+    return out
 
 def _json_rows(payload):
     if payload is None:
@@ -53,6 +194,39 @@ def _probe(urls: List[str], param_variants: List[Dict[str, Any]]) -> pd.DataFram
             except Exception as e:
                 print(f"[info] 400/err via {u} with {params}: {e}")
     return pd.DataFrame()
+
+def fetch_player_games(
+    player_code: str,
+    season: str,
+    competition: str = "E",
+    mode: str = "perGame",
+    content_url: Optional[str] = None,
+    content_json_path: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Παίρνει gamelogs για ΕΝΑΝ παίκτη από το CMS JSON.
+    - content_url: πλήρες URL του JSON (ή template με {player_code} / {season})
+    - content_json_path: αν έχεις το JSON αποθηκευμένο τοπικά (για δοκιμή)
+
+    Προτεραιότητα: content_json_path > content_url
+    """
+    import json, os
+    payload = None
+
+    if content_json_path and os.path.exists(content_json_path):
+        with open(content_json_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    elif content_url:
+        url = content_url.format(player_code=player_code, season=season, competition=competition)
+        payload = _try_json(url)
+    else:
+        raise ValueError("Provide either content_url or content_json_path")
+
+    df = parse_player_gamelogs_from_content(payload, player_code=player_code)
+    df["season"] = season
+    df["competition"] = competition
+    df["mode"] = mode
+    return df
 
 def fetch_all_gamelogs_single_call(
     season: str,
@@ -92,93 +266,49 @@ def fetch_all_player_gamelogs(
     competition: str = "E",
     mode: str = "perGame",
     player_codes: Optional[Iterable[str]] = None,
-    master_limit: int = 1000,
+    content_url_template: Optional[str] = None,
+    content_dir: Optional[str] = None,
 ) -> pd.DataFrame:
     """
-    Προσπαθούμε πρώτα «μαζικά» gamelogs (ένα row ανά παιχνίδι-παίκτη) χωρίς playerCodes.
-    Αν δεν βρεθεί τίποτα, τότε μόνο πάμε σε per-player fallback (που στο δικό σου setup έδινε 400).
+    Μαζεύει gamelogs για όλους:
+    - Αν δώσεις content_url_template → θα καλέσει URL ανά παίκτη (format με {player_code}, {season}, {competition})
+    - Αλλιώς αν δώσεις content_dir → ψάχνει αρχεία JSON: {content_dir}/{player_code}.json
     """
+    import os, pandas as pd
 
-    season_code = _season_code(competition, season)
+    # 1) φτιάξε λίστα παικτών
+    codes: List[str] = []
+    if player_codes:
+        codes = [str(x).strip() for x in player_codes if str(x).strip()]
+    else:
+        master_path = os.path.join("out", f"players_{season}_{mode}.csv")
+        if os.path.exists(master_path):
+            m = pd.read_csv(master_path)
+        else:
+            m = fetch_season_averages(season=season, competition=competition, mode=mode, limit=1000)
+        code_col = None
+        for c in m.columns:
+            if c in ("player_code", "code") or str(c).endswith(".code") or str(c).endswith("_code"):
+                code_col = c; break
+        if not code_col:
+            raise RuntimeError("Could not locate player_code column in master feed.")
+        codes = m[code_col].dropna().astype(str).unique().tolist()
 
-    # --- 1) Πιθανά endpoints που συνήθως δίνουν gamelogs ενιαία ---
-    base = f"https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions/{competition}/statistics"
-    endpoints = [
-        f"{base}/games/players/traditional",     # πιο συχνό
-        f"{base}/players/traditional/games",     # εναλλακτικό
-        f"{base}/players/games/traditional",     # εναλλακτικό
-    ]
+    frames = []
+    for code in codes:
+        try:
+            if content_dir:
+                p = os.path.join(content_dir, f"{code}.json")
+                df = fetch_player_games(code, season, competition, mode, content_json_path=p)
+            else:
+                df = fetch_player_games(code, season, competition, mode, content_url=content_url_template)
+            if not df.empty:
+                frames.append(df)
+        except Exception as e:
+            print(f"[warn] gamelogs failed for player_code={code}: {e}")
 
-    # --- 2) Παραλλαγές παραμέτρων που βλέπουμε στην πράξη ---
-    param_sets = [
-        {
-            "seasonMode": "Range",
-            "fromSeasonCode": season_code,
-            "toSeasonCode": season_code,
-            "statisticMode": mode,           # perGame
-            "limit": 100000,
-            "statisticSortMode": "GameDate",
-        },
-        {
-            "seasonMode": "Range",
-            "fromSeasonCode": season_code,
-            "toSeasonCode": season_code,
-            "statisticMode": mode,
-            "limit": 100000,
-            # χωρίς sort
-        },
-        {
-            "seasonMode": "Range",
-            "fromSeasonCode": season_code,
-            "toSeasonCode": season_code,
-            # με split ρητό σε κάποιες εγκαταστάσεις
-            "statisticMode": mode,
-            "statisticSplitMode": "ByGame",
-            "limit": 100000,
-        },
-    ]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-    print("[info] probing single-call gamelogs endpoints ...")
-    df = _probe(endpoints, param_sets)
-    if not df.empty:
-        df["season"] = season
-        df["competition"] = competition
-        df["mode"] = mode
-        return df
-
-    print("[warn] single-call gamelogs returned empty. The per-player method likely 400s on your feed.")
-    # Αν επιμείνεις να δοκιμάσεις per-player, ξεκλείδωσέ το — αλλά περιμένω 400 όπως στα logs σου:
-    if False:
-        # --- fallback per-player (ΠΡΟΑΙΡΕΤΙΚΟ, απενεργοποιημένο γιατί στο δικό σου feed δίνει 400) ---
-        if player_codes is None:
-            master_df = fetch_season_averages(season=season, competition=competition, mode=mode, limit=master_limit)
-            code_col = "player_code" if "player_code" in master_df.columns else [c for c in master_df.columns if c.endswith("player.code") or c.endswith("player_code") or c=="code"][0]
-            player_codes = master_df[[code_col]].dropna().drop_duplicates().astype(str)[code_col].tolist()
-
-        frames = []
-        for p in player_codes:
-            try:
-                url = f"{base}/players/traditional"
-                params = {
-                    "seasonMode": "Range",
-                    "fromSeasonCode": season_code,
-                    "toSeasonCode": season_code,
-                    "statisticMode": mode,
-                    "statisticSortMode": "GameDate",
-                    "playerCodes": p,
-                    "limit": 1000,
-                }
-                payload = _request_json(url, params)
-                rows = _json_rows(payload)
-                if rows:
-                    dfi = pd.json_normalize(rows, sep="_")
-                    dfi["season"] = season; dfi["competition"] = competition; dfi["mode"] = mode; dfi["player_code"] = p
-                    frames.append(dfi)
-            except Exception as e:
-                print(f"[warn] gamelogs 400 for {p}: {e}")
-        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-    return df
 
     def _one(pcode: str) -> pd.DataFrame:
         return fetch_player_games(player_code=pcode, season=season, competition=competition, mode=mode)
@@ -445,6 +575,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--out", default="out/", help="Φάκελος εξαγωγής")
     p.add_argument("--players", default="", help="Συγκεκριμένοι player codes χωρισμένοι με κόμμα π.χ. 002661,011196")
     p.add_argument("--limit", type=int, default=1000, help="limit παραμέτρου για feed")
+    p.add_argument("--content-url", default="", help="CMS JSON URL template (use {player_code},{season},{competition})")
+    p.add_argument("--content-dir", default="", help="Folder with CMS JSON dumps named <player_code>.json")
+
     return p.parse_args(argv)
 
 
@@ -469,18 +602,18 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         elif args.kind == "gamelogs":
             print(f"[info] Start gamelogs for season={season}, competition={args.competition}, mode={args.mode}")
-            df = fetch_all_player_gamelogs(
+              df = fetch_all_player_gamelogs(
                 season=season,
                 competition=args.competition,
                 mode=args.mode,
                 player_codes=players_list,
-                master_limit=args.limit,
-            )
-            if df.empty:
-                print("[warn] gamelogs came back EMPTY. Check endpoint availability and params.", file=sys.stderr)
+                content_url_template=(args.content_url or None),
+                content_dir=(args.content_dir or None),
+                )
             out_path = os.path.join(args.out, f"player_gamelogs_{season}_{args.mode}.csv")
             save_csv(df, out_path)
             print(f"[ok] Saved: {out_path} (rows={len(df)})")
+
 
         else:
             raise ValueError(f"Unknown kind: {args.kind}")
