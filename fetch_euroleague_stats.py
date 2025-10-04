@@ -162,39 +162,83 @@ def fetch_with_package(season: int, competition_code: str, mode: str) -> pd.Data
 
 def fetch_with_raw_requests(season: int, competition_code: str, mode: str) -> pd.DataFrame:
     """
-    Χρησιμοποιεί το ίδιο endpoint με το site (stats/expanded).
+    1) Προσπαθεί σύγχρονα API endpoints του api-live.euroleague.net
+    2) Fallback: κάνει scraping τον πίνακα από το /stats/expanded/ (όπως στο site)
+    Επιστρέφει DataFrame με τα rows· αν δεν βρεθούν, επιστρέφει κενό DF.
     """
-    import requests, pandas as pd
+    import re
+    import requests
+    import pandas as pd
 
-    base = "https://www.euroleaguebasketball.net/el/euroleague/stats/expanded/"
+    base_api = "https://api-live.euroleague.net"
+    base_web = "https://www.euroleaguebasketball.net/el/euroleague/stats/expanded/"
     season_code = f"{competition_code}{season}"  # π.χ. E2025
 
-    url = (
-        f"{base}?size=1000&viewType=traditional"
-        f"&seasonMode=Range"
-        f"&statisticMode={mode}"
+    # ---------- (A) API candidates ----------
+    api_candidates = [
+        # Προτιμούμε το Range (όπως στο site)
+        f"{base_api}/v1/players/stats?seasonMode=Range&fromSeasonCode={season_code}"
+        f"&toSeasonCode={season_code}&competitionCode={competition_code}&statisticMode={mode}&size=10000",
+        # Εναλλακτικά το seasonCode
+        f"{base_api}/v1/players/stats?seasonCode={season_code}&competitionCode={competition_code}"
+        f"&statisticMode={mode}&size=10000",
+        # Παλιό pattern
+        f"{base_api}/v1/players/stats?season={season}&competitionCode={competition_code}&statisticMode={mode}"
+    ]
+
+    last_err = None
+    for url in api_candidates:
+        try:
+            print(f"🔎 Trying API URL: {url}")
+            r = requests.get(url, timeout=60)
+            print("   → status:", r.status_code)
+            r.raise_for_status()
+            data = r.json()
+            rows = data.get("data", data)
+            df = pd.json_normalize(rows)
+            if len(df) > 0:
+                print(f"✅ API returned {len(df)} rows")
+                return df
+        except Exception as e:
+            last_err = e
+            print(f"⚠️ API attempt failed: {e}")
+
+    # ---------- (B) Fallback: scrape από expanded page ----------
+    web_url = (
+        f"{base_web}?size=1000&viewType=traditional"
+        f"&seasonMode=Range&statisticMode={mode}"
         f"&fromSeasonCode={season_code}&toSeasonCode={season_code}"
         f"&sortDirection=ascending&statistic="
     )
-
-    print("🔎 Trying URL:", url)
-
-    r = requests.get(url, timeout=60)
-    print("🔎 Status code:", r.status_code)
-    print("🔎 Response snippet:", r.text[:500])  # δείξε πρώτα 500 χαρακτήρες
-
-    # Πολλές φορές το response είναι JSON (αν το καλέσεις απευθείας με headers)
     try:
-        data = r.json()
-        rows = data.get("data", data)
-        df = pd.json_normalize(rows)
-        if len(df) > 0:
-            return df
-    except Exception as e:
-        print("⚠️ JSON decode failed:", e)
+        print(f"🔎 Fallback to HTML table: {web_url}")
+        # Διαβάζουμε όλους τους πίνακες· συνήθως ο 1ος είναι τα player stats
+        tables = pd.read_html(web_url)  # απαιτεί lxml
+        if not tables:
+            print("⚠️ No tables found on expanded page")
+            return pd.DataFrame()
+        df = tables[0].copy()
+        print(f"✅ Scraped HTML table with shape: {df.shape}")
 
-    # Αν δεν είναι JSON, γύρισε empty DataFrame
-    return pd.DataFrame()
+        # Κανονικοποίηση κεφαλίδων (αφαιρούμε κενά/μη-αλφαριθμητικά, π.χ. '3P%' → '3P%')
+        df.columns = [re.sub(r"\s+", " ", str(c)).strip() for c in df.columns]
+
+        # Συχνά η 1η στήλη είναι index/# — την πετάμε αν υπάρχει
+        if df.columns[0].lower() in {"#", "unnamed: 0"}:
+            df = df.iloc[:, 1:]
+
+        # Μετατροπή προφανών numeric (ό,τι μοιάζει με ποσοστό/αριθμό)
+        for col in df.columns:
+            # Προσπαθούμε να κάνουμε numeric όπου γίνεται, χωρίς σφάλμα
+            df[col] = pd.to_numeric(df[col].astype(str).str.replace("%", "", regex=False)
+                                    .str.replace(",", ".", regex=False), errors="ignore")
+
+        return df
+    except Exception as e:
+        print(f"❌ HTML scrape failed: {e}")
+        # Τελικό fallback: κενό DF με μήνυμα
+        return pd.DataFrame()
+
 
 
 
