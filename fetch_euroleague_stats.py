@@ -14,7 +14,153 @@ import os
 import sys
 from typing import List, Dict
 import pandas as pd
+import time
+import requests
 
+
+INCROWD_BASE = "https://feeds.incrowdsports.com/provider/euroleague-feeds/v3"
+
+def _norm_pct(series):
+    if series.dtype == object:
+        s = (series.astype(str)
+                  .str.replace("%", "", regex=False)
+                  .str.replace(",", ".", regex=False))
+        return pd.to_numeric(s, errors="coerce")
+    return series
+
+def fetch_player_games(player_code: str, season: int,
+                       competition: str = "E",
+                       mode: str = "perGame",
+                       limit: int = 1000) -> pd.DataFrame:
+    """
+    Gamelogs ενός παίκτη (ένα row ανά παιχνίδι) από IncrowdSports JSON feed.
+    - player_code: π.χ. '002661'
+    - season: 2025 (χωρίς Ε)
+    - competition: 'E' (EuroLeague) ή 'U' (EuroCup)
+    - mode: 'perGame' | 'perMinute' | 'accumulated'
+    """
+    season_code = f"{competition}{season}"
+    url = (
+        f"{INCROWD_BASE}/competitions/{competition}/statistics/players/traditional"
+        f"?seasonMode=Range&fromSeasonCode={season_code}&toSeasonCode={season_code}"
+        f"&statisticMode={mode}&statisticSortMode=GameDate"
+        f"&playerCodes={player_code}&limit={limit}"
+    )
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    r = requests.get(url, headers=headers, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+
+    # Το response έχει συνήθως key "players" με λίστα παικτών, όπου κάθε παίκτης έχει "games"
+    players = data.get("players", [])
+    if not players:
+        return pd.DataFrame()
+
+    # συνήθως είναι ένας παίκτης – παίρνουμε όλα τα παιχνίδια
+    rows = []
+    for p in players:
+        games = p.get("games", [])
+        if not games:
+            continue
+        df = pd.json_normalize(games)
+        # εμπλουτισμός χρήσιμων metadata του παίκτη
+        meta = {
+            "player.code": p.get("player", {}).get("code"),
+            "player.name": p.get("player", {}).get("name"),
+            "team.code": p.get("team", {}).get("tvCodes"),
+            "team.name": p.get("team", {}).get("name"),
+        }
+        for k, v in meta.items():
+            df[k] = v
+        rows.append(df)
+
+    if not rows:
+        return pd.DataFrame()
+
+    out = pd.concat(rows, ignore_index=True)
+
+    # ονοματοδοσία βασικών στηλών (όπου υπάρχουν)
+    rename = {
+        "gameCode": "GameCode",
+        "roundNumber": "Round",
+        "date": "GameDate",
+        "homeOrAway": "HA",  # 'H' ή 'A'
+        "opponent.tvCodes": "OppCode",
+        "opponent.name": "OppName",
+        "minutesPlayed": "MIN",
+        "pointsScored": "PTS",
+        "assists": "AST",
+        "turnovers": "TOV",
+        "offensiveRebounds": "OREB",
+        "defensiveRebounds": "DREB",
+        "totalRebounds": "REB",
+        "steals": "STL",
+        "blocks": "BLK",
+        "foulsCommitted": "PF",
+        "pir": "PIR",
+        "twoPointersMade": "2PM",
+        "twoPointersAttempted": "2PA",
+        "twoPointersPercentage": "2P%",
+        "threePointersMade": "3PM",
+        "threePointersAttempted": "3PA",
+        "threePointersPercentage": "3P%",
+        "freeThrowsMade": "FTM",
+        "freeThrowsAttempted": "FTA",
+        "freeThrowsPercentage": "FT%",
+    }
+    out.rename(columns={k: v for k, v in rename.items() if k in out.columns}, inplace=True)
+
+    # καθάρισε ποσοστά
+    for col in ["2P%", "3P%", "FT%"]:
+        if col in out.columns:
+            out[col] = _norm_pct(out[col])
+
+    # Μετατροπές τύπων
+    # GameDate σε datetime (αν υπάρχει)
+    if "GameDate" in out.columns:
+        out["GameDate"] = pd.to_datetime(out["GameDate"], errors="coerce")
+
+    return out
+
+
+def fetch_all_player_gamelogs(season: int,
+                              competition: str = "E",
+                              mode: str = "perGame",
+                              rate_sleep: float = 0.2) -> pd.DataFrame:
+    """
+    Φέρνει gamelogs για ΟΛΟΥΣ τους παίκτες της σεζόν που υπάρχουν στο master feed.
+    """
+    season_code = f"{competition}{season}"
+    # master feed για να πάρουμε όλους τους player codes
+    master_url = (
+        f"{INCROWD_BASE}/competitions/{competition}/statistics/players/traditional"
+        f"?seasonMode=Range&limit=1000&sortDirection=ascending"
+        f"&fromSeasonCode={season_code}&toSeasonCode={season_code}"
+        f"&statisticMode={mode}"
+    )
+    players = requests.get(master_url, timeout=60).json().get("players", [])
+    master_df = pd.json_normalize(players)
+    codes = master_df.get("player.code")
+    if codes is None or master_df.empty:
+        return pd.DataFrame()
+
+    codes = master_df["player.code"].dropna().astype(str).unique().tolist()
+
+    all_rows = []
+    for code in codes:
+        try:
+            df = fetch_player_games(code, season, competition, mode)
+            if len(df):
+                all_rows.append(df)
+        except Exception:
+            # αν κάποιος παίκτης αποτύχει, συνέχισε
+            pass
+        time.sleep(rate_sleep)  # ευγένεια προς το feed
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    return pd.concat(all_rows, ignore_index=True)
 
 # ---------------- Helpers & Advanced Metrics ----------------
 def _get_col(df, *candidates, default=0):
