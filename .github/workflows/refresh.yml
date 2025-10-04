@@ -5,9 +5,8 @@ on:
     - cron: "0 4 * * *"   # καθημερινά στις 04:00 UTC
   workflow_dispatch:       # χειροκίνητη εκτέλεση από το tab Actions
 
-# Δίνει δικαιώματα για commit/push με το GITHUB_TOKEN
 permissions:
-  contents: write
+  contents: write          # επιτρέπει commit/push με το GITHUB_TOKEN
 
 jobs:
   fetch-and-commit:
@@ -30,10 +29,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Fetch stats (E2025, perGame)
+      - name: Fetch stats (EuroLeague E2025, perGame)
         run: |
           mkdir -p out
-          python fetch_euroleague_stats.py --seasons 2025 --mode perGame --out out/
+          # Αν θέλεις και άλλες σεζόν, πρόσθεσέ τες μετά το 2025 (π.χ. 2025 2024 2023)
+          python fetch_euroleague_stats.py --seasons 2025 --mode perGame --competition E --out out/
           echo "----- Listing out/ -----"
           ls -l out || true
 
