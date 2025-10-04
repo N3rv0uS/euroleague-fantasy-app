@@ -16,6 +16,44 @@ DEFAULT_HEADERS = {
     # πρόσθεσε headers αν ποτέ χρειαστεί (π.χ. User-Agent)
     "Accept": "application/json, text/plain, */*",
 }
+# -------- robust helpers for Incrowd variants --------
+
+def _json_rows(payload):
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for k in ("items", "data", "rows", "list"):
+            v = payload.get(k)
+            if isinstance(v, list):
+                return v
+        # first list value
+        for v in payload.values():
+            if isinstance(v, list):
+                return v
+    return []
+
+def _probe(urls: List[str], param_variants: List[Dict[str, Any]]) -> pd.DataFrame:
+    """
+    Δοκιμάζει διαδοχικά endpoints & σετ παραμέτρων. Επιστρέφει το πρώτο DF που έχει rows.
+    Γράφει μικρά logs για να ξέρεις τι «έπιασε».
+    """
+    for u in urls:
+        for params in param_variants:
+            try:
+                payload = _request_json(u, params)
+                rows = _json_rows(payload)
+                if rows:
+                    df = pd.json_normalize(rows, sep="_")
+                    print(f"[ok] gamelogs via {u} with { {k:params[k] for k in sorted(params)} }  rows={len(df)}")
+                    return df
+                else:
+                    print(f"[info] empty via {u} with {params}")
+            except Exception as e:
+                print(f"[info] 400/err via {u} with {params}: {e}")
+    return pd.DataFrame()
+
 def fetch_all_gamelogs_single_call(
     season: str,
     competition: str = "E",
@@ -55,51 +93,92 @@ def fetch_all_player_gamelogs(
     mode: str = "perGame",
     player_codes: Optional[Iterable[str]] = None,
     master_limit: int = 1000,
-    max_workers: int = 8,
-    only_active: bool = True,
 ) -> pd.DataFrame:
     """
-    1) Πρώτα δοκιμάζουμε single-call (games→players).
-    2) Αν βγει κενό, fallback: loop σε playerCodes (παλιή μέθοδος).
+    Προσπαθούμε πρώτα «μαζικά» gamelogs (ένα row ανά παιχνίδι-παίκτη) χωρίς playerCodes.
+    Αν δεν βρεθεί τίποτα, τότε μόνο πάμε σε per-player fallback (που στο δικό σου setup έδινε 400).
     """
 
-    # --- 1) Single-call attempt ---
-    print("[info] Trying single-call gamelogs ...")
-    df_single = fetch_all_gamelogs_single_call(season, competition, mode)
-    if not df_single.empty:
-        print(f"[ok] Single-call returned rows={len(df_single)}")
-        return df_single
+    season_code = _season_code(competition, season)
 
-    print("[warn] Single-call returned empty. Falling back to per-player loop.")
+    # --- 1) Πιθανά endpoints που συνήθως δίνουν gamelogs ενιαία ---
+    base = f"https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions/{competition}/statistics"
+    endpoints = [
+        f"{base}/games/players/traditional",     # πιο συχνό
+        f"{base}/players/traditional/games",     # εναλλακτικό
+        f"{base}/players/games/traditional",     # εναλλακτικό
+    ]
 
-    # --- 2) Fallback: per-player loop ---
-    if player_codes is None:
-        master_df = fetch_season_averages(season=season, competition=competition, mode=mode, limit=master_limit)
+    # --- 2) Παραλλαγές παραμέτρων που βλέπουμε στην πράξη ---
+    param_sets = [
+        {
+            "seasonMode": "Range",
+            "fromSeasonCode": season_code,
+            "toSeasonCode": season_code,
+            "statisticMode": mode,           # perGame
+            "limit": 100000,
+            "statisticSortMode": "GameDate",
+        },
+        {
+            "seasonMode": "Range",
+            "fromSeasonCode": season_code,
+            "toSeasonCode": season_code,
+            "statisticMode": mode,
+            "limit": 100000,
+            # χωρίς sort
+        },
+        {
+            "seasonMode": "Range",
+            "fromSeasonCode": season_code,
+            "toSeasonCode": season_code,
+            # με split ρητό σε κάποιες εγκαταστάσεις
+            "statisticMode": mode,
+            "statisticSplitMode": "ByGame",
+            "limit": 100000,
+        },
+    ]
 
-        # Στήλη με player_code: στο δικό σου CSV είναι *ακριβώς* "player_code"
-        if "player_code" in master_df.columns:
-            code_col = "player_code"
-        else:
-            cand = [c for c in master_df.columns if c.endswith("player.code") or c.endswith("player_code") or c == "code"]
-            if not cand:
-                raise ValueError("Δεν βρέθηκε στήλη με player code στο master feed.")
-            code_col = cand[0]
+    print("[info] probing single-call gamelogs endpoints ...")
+    df = _probe(endpoints, param_sets)
+    if not df.empty:
+        df["season"] = season
+        df["competition"] = competition
+        df["mode"] = mode
+        return df
 
-        if only_active:
-            # gamesPlayed υπάρχει στα season averages που έδειξες
-            gp_candidates = [c for c in ["gamesPlayed","GP","games","statistics_games"] if c in master_df.columns]
-            if gp_candidates:
-                gp_col = gp_candidates[0]
-                master_df = master_df[pd.to_numeric(master_df[gp_col], errors="coerce").fillna(0) > 0]
+    print("[warn] single-call gamelogs returned empty. The per-player method likely 400s on your feed.")
+    # Αν επιμείνεις να δοκιμάσεις per-player, ξεκλείδωσέ το — αλλά περιμένω 400 όπως στα logs σου:
+    if False:
+        # --- fallback per-player (ΠΡΟΑΙΡΕΤΙΚΟ, απενεργοποιημένο γιατί στο δικό σου feed δίνει 400) ---
+        if player_codes is None:
+            master_df = fetch_season_averages(season=season, competition=competition, mode=mode, limit=master_limit)
+            code_col = "player_code" if "player_code" in master_df.columns else [c for c in master_df.columns if c.endswith("player.code") or c.endswith("player_code") or c=="code"][0]
+            player_codes = master_df[[code_col]].dropna().drop_duplicates().astype(str)[code_col].tolist()
 
-        player_codes = (
-            master_df[[code_col]].dropna().drop_duplicates().astype(str)[code_col].tolist()
-        )
+        frames = []
+        for p in player_codes:
+            try:
+                url = f"{base}/players/traditional"
+                params = {
+                    "seasonMode": "Range",
+                    "fromSeasonCode": season_code,
+                    "toSeasonCode": season_code,
+                    "statisticMode": mode,
+                    "statisticSortMode": "GameDate",
+                    "playerCodes": p,
+                    "limit": 1000,
+                }
+                payload = _request_json(url, params)
+                rows = _json_rows(payload)
+                if rows:
+                    dfi = pd.json_normalize(rows, sep="_")
+                    dfi["season"] = season; dfi["competition"] = competition; dfi["mode"] = mode; dfi["player_code"] = p
+                    frames.append(dfi)
+            except Exception as e:
+                print(f"[warn] gamelogs 400 for {p}: {e}")
+        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    frames: List[pd.DataFrame] = []
-    total = len(player_codes)
-    print(f"[info] Fallback: fetching gamelogs per player for {total} players ...")
+    return df
 
     def _one(pcode: str) -> pd.DataFrame:
         return fetch_player_games(player_code=pcode, season=season, competition=competition, mode=mode)
