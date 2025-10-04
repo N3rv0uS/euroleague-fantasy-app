@@ -1,4 +1,4 @@
-name: Smoke probe (gamelogs)
+name: Smoke run (gamelogs)
 
 on:
   workflow_dispatch:
@@ -8,60 +8,70 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: |
+
+      - name: Install minimal deps
+        run: |
           python -m pip install --upgrade pip
           pip install requests pandas
+
       - name: Probe gamelogs endpoints (diagnostic)
         run: |
           python - << 'PY'
-import requests, pandas as pd
+          import requests, pandas as pd
 
-season_code = "E2025"
-base = "https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions/E/statistics"
-endpoints = [
-    f"{base}/games/players/traditional",
-    f"{base}/players/traditional/games",
-    f"{base}/players/games/traditional",
-]
-param_sets = [
-    {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","limit":200,"statisticSortMode":"GameDate"},
-    {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","limit":200},
-    {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","statisticSplitMode":"ByGame","limit":200},
-]
+          season_code = "E2025"
+          base = "https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions/E/statistics"
+          endpoints = [
+              f"{base}/games/players/traditional",
+              f"{base}/players/traditional/games",
+              f"{base}/players/games/traditional",
+          ]
+          param_sets = [
+              {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","limit":200,"statisticSortMode":"GameDate"},
+              {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","limit":200},
+              {"seasonMode":"Range","fromSeasonCode":season_code,"toSeasonCode":season_code,"statisticMode":"perGame","statisticSplitMode":"ByGame","limit":200},
+          ]
 
-def find_rows(j):
-    if isinstance(j, list): return j
-    if isinstance(j, dict):
-        for k in ("items","data","rows","list"):
-            v = j.get(k)
-            if isinstance(v, list): return v
-        for v in j.values():
-            if isinstance(v, list): return v
-    return []
+          def find_rows(j):
+              if isinstance(j, list): return j
+              if isinstance(j, dict):
+                  for k in ("items","data","rows","list"):
+                      v = j.get(k)
+                      if isinstance(v, list): return v
+                  for v in j.values():
+                      if isinstance(v, list): return v
+              return []
 
-ok = False
-for url in endpoints:
-    for params in param_sets:
-        r = requests.get(url, params=params, timeout=30)
-        print("STATUS:", r.status_code, "URL:", r.url)
-        try:
-            j = r.json()
-        except Exception as e:
-            print("JSON error:", e)
-            continue
-        rows = find_rows(j)
-        print("ROWS:", len(rows))
-        if rows:
-            df = pd.json_normalize(rows, sep="_")
-            print("COLUMNS(sample):", list(df.columns)[:12])
-            print(df.head(5).to_string(index=False))
-            ok = True
-            break
-    if ok: break
+          ok = False
+          for url in endpoints:
+              for params in param_sets:
+                  r = requests.get(url, params=params, timeout=30)
+                  print("STATUS:", r.status_code, "URL:", r.url)
+                  try:
+                      j = r.json()
+                  except Exception as e:
+                      print("JSON error:", e)
+                      continue
+                  rows = find_rows(j)
+                  print("ROWS:", len(rows))
+                  if rows:
+                      df = pd.json_normalize(rows, sep="_")
+                      print("COLUMNS(sample):", list(df.columns)[:12])
+                      print(df.head(5).to_string(index=False))
+                      df.to_csv("tmp_out/gamelogs_probe.csv", index=False)
+                      ok = True
+                      break
+              if ok:
+                  break
 
-if not ok:
-    print("No rows from any endpoint/params variant.")
-PY
+          if not ok:
+              print("No rows from any endpoint/params variant.")
+          PY
+
+      - name: List outputs (if any)
+        run: |
+          ls -lah tmp_out || true
