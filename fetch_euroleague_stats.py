@@ -445,13 +445,14 @@ def main():
         try:
             if args.force_raw:
                 used_raw = True
-                df = fetch_with_raw_requests(season, competition, mode)
+                df = fetch_from_incrowd(season, competition, mode)
             else:
                 try:
                     df = fetch_with_package(season, competition, mode)
                 except Exception:
                     used_raw = True
-                    df = fetch_with_raw_requests(season, competition, mode)
+                    df = fetch_from_incrowd(season, competition, mode)
+
         except Exception as e:
             print(f"[Σφάλμα] Season {season}: {e}", file=sys.stderr)
             continue
