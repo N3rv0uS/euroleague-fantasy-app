@@ -4,3 +4,4 @@ openpyxl
 sqlite-utils
 streamlit
 euroleague-api
+lxml
