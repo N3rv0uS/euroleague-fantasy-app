@@ -2,11 +2,11 @@ name: Refresh EuroLeague stats
 
 on:
   schedule:
-    - cron: "0 4 * * *"   # καθημερινά στις 04:00 UTC
-  workflow_dispatch:       # μπορείς να το τρέξεις και χειροκίνητα
+    - cron: "0 4 * * *"
+  workflow_dispatch:
 
 permissions:
-  contents: write          # δίνει δικαιώματα για commit/push με GITHUB_TOKEN
+  contents: write
 
 jobs:
   fetch-and-commit:
@@ -28,11 +28,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+          # Εγκατάσταση Chromium για Playwright
+          python -m playwright install --with-deps chromium
 
       - name: Fetch stats (EuroLeague E2025, perGame)
         run: |
           mkdir -p out
-          echo "🔎 Fetching EuroLeague stats for season 2025..."
           python fetch_euroleague_stats.py --seasons 2025 --competition E --mode perGame --out out/ --force-raw
           echo "----- Listing out/ -----"
           ls -lh out || true
