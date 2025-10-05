@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import argparse, os, time, pandas as pd, requests
-from bn_probe import parse_bn_html_gamelogs, unify_columns
+from bn_probe import parse_bn_html_gamelogs, unify_columns, extract_player_name_from_html
 
 UA = {"User-Agent": "Mozilla/5.0"}
 
@@ -16,7 +16,7 @@ def main():
     ap.add_argument("--season", required=True)
     ap.add_argument("--competition", default="E")
     ap.add_argument("--mode", default="perGame")
-    ap.add_argument("--map_csv", default="bn_map.csv", help="CSV: player_code,bn_path")
+    ap.add_argument("--map_csv", default="bn_map.csv", help="CSV: player_code,bn_path,(optional)player_name")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--delay_ms", type=int, default=300)
     ap.add_argument("--out_dir", default="out")
@@ -27,8 +27,8 @@ def main():
         raise SystemExit(f"Λείπει {args.map_csv}. Φτιάξ' το με bn_make_mapping.py και συμπλήρωσε bn_path.")
 
     m = pd.read_csv(args.map_csv)
-    if not {"player_code","bn_path"} <= set(m.columns):
-        raise SystemExit("Το mapping πρέπει να έχει στήλες: player_code, bn_path")
+    if "player_code" not in m.columns or "bn_path" not in m.columns:
+        raise SystemExit("Το mapping πρέπει να έχει στήλες: player_code, bn_path (προαιρετικά player_name).")
 
     subset = m[m["bn_path"].astype(str).str.strip() != ""]
     if args.limit > 0:
@@ -38,6 +38,10 @@ def main():
     for i, row in enumerate(subset.itertuples(index=False), start=1):
         code = str(row.player_code)
         bn_path = str(row.bn_path).strip()
+        pname = ""
+        if "player_name" in m.columns:
+            pname = str(row.player_name) if getattr(row, "player_name", "") else ""
+
         page_url = f"https://basketnews.com/players/{bn_path}/statistics/leagues/25-euroleague/{args.season}.html"
         try:
             html = fetch_page(page_url)
@@ -45,7 +49,11 @@ def main():
             if df.empty:
                 print(f"[{i}] {code} -> 0 rows")
             else:
+                if not pname:
+                    pname = extract_player_name_from_html(html) or ""
                 df["player_code"] = code
+                if pname:
+                    df["player_name"] = pname
                 df["season"] = args.season
                 df["competition"] = args.competition
                 df["mode"] = args.mode
@@ -57,7 +65,11 @@ def main():
 
     if frames:
         out = pd.concat(frames, ignore_index=True)
-        out = unify_columns(out)  # τελικό safety
+        out = unify_columns(out)  # safety
+        # πετά αριθμητικές «στήλες-θόρυβο»
+        junk = [c for c in out.columns if str(c).isdigit()]
+        if junk:
+            out = out.drop(columns=junk, errors="ignore")
         out_csv = os.path.join(args.out_dir, f"player_gamelogs_{args.season}_{args.mode}.csv")
         out.to_csv(out_csv, index=False)
         print(f"[OK] saved {out_csv} rows={len(out)}")
