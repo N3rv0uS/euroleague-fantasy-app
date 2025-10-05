@@ -35,42 +35,33 @@ def make_gamelogs_path(season: str, mode: str) -> Path:
     return OUT_DIR / f"player_gamelogs_{season}_{mode}.csv"
 
 
-def safe_div(num, den):
-    num = pd.to_numeric(num, errors="coerce")
-    den = pd.to_numeric(den, errors="coerce").replace(0, np.nan)
-    return (num / den).fillna(0.0)
-
-
-def clamp01(s: pd.Series) -> pd.Series:
-    return s.clip(lower=0, upper=1)
-
-
-def minmax_0_100(s: pd.Series) -> pd.Series:
-    s = pd.to_numeric(s, errors="coerce").fillna(0.0)
-    s_clipped = s.clip(lower=s.quantile(0.02), upper=s.quantile(0.98))  # αντοχή σε outliers
-    rng = s_clipped.max() - s_clipped.min()
-    if rng == 0:
-        return pd.Series(50.0, index=s.index)
-    return 100.0 * (s_clipped - s_clipped.min()) / rng
+def _first_col(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
 
 
 # ---------- NORMALIZATION ----------
-def normalize_players_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, list, list]:
+def normalize_players_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, list[str], list[str]]:
+    """Map aliases -> ζητούμενες στήλες & κράτα μόνο αυτές που έχουμε."""
+
+    # --- Rename aliases σε canonical ονόματα που ζητάς ---
     rename_map: Dict[str, str] = {}
 
     # IDs / meta
-    for a in ["player_code", "code", "playerCode", "id"]:
+    for a in ["player_code", "code", "playerCode"]:
         if a in df.columns: rename_map[a] = "player_code"
     for a in ["player_name", "name", "playerName"]:
         if a in df.columns: rename_map[a] = "Player"
-    for a in ["team_code", "player_team_code", "teamCode", "team", "Team code"]:
+    for a in ["team_code", "player_team_code", "teamCode", "team"]:
         if a in df.columns: rename_map[a] = "Team"
     for a in ["team_name", "player_team_name", "teamName"]:
         if a in df.columns and "Team" not in rename_map.values(): rename_map[a] = "Team"
 
-    # Position (θα χρησιμοποιηθεί στα recommendations)
-    for a in ["player_position", "position", "positionShort", "pos"]:
-        if a in df.columns: rename_map[a] = "PosRaw"
+    # πιθανές στήλες θέσης
+    for a in ["position", "player_position", "pos", "PlayerPosition", "Position"]:
+        if a in df.columns: rename_map[a] = "Position"
 
     # Games
     for a in ["gamesPlayed", "GP", "games", "G"]:
@@ -84,25 +75,22 @@ def normalize_players_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, list, list]:
     for a in ["pir", "PIR", "EFF", "efficiency"]:
         if a in df.columns: rename_map[a] = "PIR"
 
-    # PTS
-    for a in ["pointsScored", "PTS", "Points"]:
-        if a in df.columns: rename_map[a] = "PTS"
-
+    # Shooting splits
     # 2P
-    if "twoPointersMade" in df.columns: rename_map["twoPointersMade"] = "2PM"
-    if "twoPointersAttempted" in df.columns: rename_map["twoPointersAttempted"] = "2PA"
-    if "twoPointersPercentage" in df.columns: rename_map["twoPointersPercentage"] = "2P%"
-    if "2PM" in df.columns: rename_map["2PM"] = "2PM"
-    if "2PA" in df.columns: rename_map["2PA"] = "2PA"
-    if "2P%" in df.columns: rename_map["2P%"] = "2P%"
+    for a in ["twoPointersMade", "2PM"]:
+        if a in df.columns: rename_map[a] = "2PM"
+    for a in ["twoPointersAttempted", "2PA"]:
+        if a in df.columns: rename_map[a] = "2PA"
+    for a in ["twoPointersPercentage", "2P%"]:
+        if a in df.columns: rename_map[a] = "2P%"
 
     # 3P
-    if "threePointersMade" in df.columns: rename_map["threePointersMade"] = "3PM"
-    if "threePointersAttempted" in df.columns: rename_map["threePointersAttempted"] = "3PA"
-    if "threePointersPercentage" in df.columns: rename_map["threePointersPercentage"] = "3P%"
-    if "3PM" in df.columns: rename_map["3PM"] = "3PM"
-    if "3PA" in df.columns: rename_map["3PA"] = "3PA"
-    if "3P%" in df.columns: rename_map["3P%"] = "3P%"
+    for a in ["threePointersMade", "3PM"]:
+        if a in df.columns: rename_map[a] = "3PM"
+    for a in ["threePointersAttempted", "3PA"]:
+        if a in df.columns: rename_map[a] = "3PA"
+    for a in ["threePointersPercentage", "3P%"]:
+        if a in df.columns: rename_map[a] = "3P%"
 
     # FT
     for a in ["freeThrowsMade", "FTM"]:
@@ -120,7 +108,9 @@ def normalize_players_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, list, list]:
     for a in ["totalRebounds", "REB", "TR", "TRB"]:
         if a in df.columns: rename_map[a] = "TR"
 
-    # Playmaking / defense / fouls
+    # Points / playmaking / defense / fouls
+    for a in ["pointsScored", "PTS", "Points"]:
+        if a in df.columns: rename_map[a] = "PTS"
     for a in ["assists", "AST"]:
         if a in df.columns: rename_map[a] = "AST"
     for a in ["steals", "STL"]:
@@ -136,7 +126,7 @@ def normalize_players_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, list, list]:
     for a in ["foulsDrawn", "FD", "FLS_RV"]:
         if a in df.columns: rename_map[a] = "FD"
 
-    # Season / competition
+    # Season / competition (τα κρατάμε κρυφά για join)
     for a in ["season", "Season"]:
         if a in df.columns: rename_map[a] = "season"
     for a in ["competition", "Competition"]:
@@ -144,13 +134,15 @@ def normalize_players_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, list, list]:
 
     df = df.rename(columns=rename_map)
 
-    # Αντιμετώπιση ελαχίστων
+    # Γέμισε ελάχιστα πεδία αν λείπουν
     for c in ["Player", "player_code", "Team"]:
         if c not in df.columns: df[c] = None
 
+    # Υπολόγισε TR αν λείπει αλλά έχουμε OR+DR
     if "TR" not in df.columns and all(c in df.columns for c in ["OR", "DR"]):
         df["TR"] = df["OR"].fillna(0) + df["DR"].fillna(0)
 
+    # Ζητούμενη σειρά base στηλών
     target_cols = [
         "Player", "Team",
         "GP", "GS", "Min", "PTS",
@@ -160,19 +152,20 @@ def normalize_players_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, list, list]:
         "OR", "DR", "TR",
         "AST", "STL", "TO", "BLK", "BLKA",
         "FC", "FD", "PIR",
-        "BCI", "Stability", "Form3",  # advanced
+        "BCI", "Stability", "Form3",  # advanced που θα συμπληρωθούν
     ]
 
-    keep = [c for c in target_cols if c in df.columns and c not in ["BCI", "Stability", "Form3"]]
+    # Ταξινόμηση by PIR αν υπάρχει
     if "PIR" in df.columns:
         df = df.sort_values("PIR", ascending=False, na_position="last")
 
+    keep = [c for c in target_cols if c in df.columns and c not in ["BCI", "Stability", "Form3"]]
     return df, keep, target_cols
 
 
 def normalize_gamelogs_df(df: pd.DataFrame) -> pd.DataFrame:
     ren = {}
-    for a in ["player_code", "code", "playerCode", "id"]:
+    for a in ["player_code", "code", "playerCode"]:
         if a in df.columns: ren[a] = "player_code"
     for a in ["player_name", "name", "playerName"]:
         if a in df.columns: ren[a] = "Player"
@@ -182,8 +175,8 @@ def normalize_gamelogs_df(df: pd.DataFrame) -> pd.DataFrame:
         if a in df.columns: ren[a] = "opponent"
     for a in ["game_date", "date", "gameDate", "Date"]:
         if a in df.columns: ren[a] = "game_date"
-
     df = df.rename(columns=ren)
+
     if "game_date" in df.columns:
         df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
 
@@ -204,153 +197,234 @@ def normalize_gamelogs_df(df: pd.DataFrame) -> pd.DataFrame:
     _alias("FC", "foulsCommitted", "foulsCommited", "FLS_CM")
     _alias("FD", "foulsDrawn", "FLS_RV", "FD")
     _alias("PIR", "pir", "EFF", "efficiency")
+    return df
 
-    # σκοπεύουμε να υπολογίσουμε και Stocks
-    if "Stocks" not in df.columns and all(c in df.columns for c in ["STL", "BLK"]):
-        df["Stocks"] = df["STL"].fillna(0) + df["BLK"].fillna(0)
+
+# ---------- ADVANCED ----------
+def per_min(x: pd.Series, minutes: pd.Series) -> pd.Series:
+    x = x.fillna(0)
+    m = minutes.replace(0, np.nan)
+    return (x / m).fillna(0)
+
+
+def compute_attempts_from_pct(made: pd.Series, pct: pd.Series) -> pd.Series:
+    """Αν λείπουν attempts αλλά έχουμε makes & %, εκτίμηση A = M / (pct/100)."""
+    made = made.astype(float).fillna(0)
+    p = pct.astype(float).replace(0, np.nan)
+    return (made / (p / 100.0)).round(1).fillna(0)
+
+
+def add_feature_columns(players_df: pd.DataFrame) -> pd.DataFrame:
+    df = players_df.copy()
+
+    # Εξασφάλισε attempts (2PA, 3PA, FTA) αν λείπουν
+    if "2PA" not in df.columns and all(c in df.columns for c in ["2PM", "2P%"]):
+        df["2PA"] = compute_attempts_from_pct(df["2PM"], df["2P%"])
+    if "3PA" not in df.columns and all(c in df.columns for c in ["3PM", "3P%"]):
+        df["3PA"] = compute_attempts_from_pct(df["3PM"], df["3P%"])
+    # FTA συνήθως υπάρχει· αν λείπει αλλά υπάρχει FT%/FTM:
+    if "FTA" not in df.columns and all(c in df.columns for c in ["FTM", "FT%"]):
+        df["FTA"] = compute_attempts_from_pct(df["FTM"], df["FT%"])
+
+    # Προσπάθειες/FG totals
+    df["FGA"] = df.get("2PA", 0).fillna(0) + df.get("3PA", 0).fillna(0)
+
+    # eFG% = (2PM + 1.5*3PM) / FGA
+    efg_num = df.get("2PM", 0).fillna(0) + 1.5 * df.get("3PM", 0).fillna(0)
+    df["eFG%"] = (efg_num / df["FGA"].replace(0, np.nan)).fillna(0)
+
+    # TS% ~ PTS / (2*(FGA + 0.44*FTA))
+    denom = 2 * (df["FGA"] + 0.44 * df.get("FTA", 0).fillna(0))
+    df["TS%"] = (df.get("PTS", 0).fillna(0) / denom.replace(0, np.nan)).fillna(0)
+
+    # FT Rate
+    df["FTR"] = (df.get("FTA", 0).fillna(0) / df["FGA"].replace(0, np.nan)).fillna(0)
+
+    # Per-minute metrics
+    df["PTS/min"] = per_min(df.get("PTS", 0), df.get("Min", 0))
+    df["TR/min"]  = per_min(df.get("TR", 0),  df.get("Min", 0))
+    df["AST/min"] = per_min(df.get("AST", 0), df.get("Min", 0))
+    df["FD/min"]  = per_min(df.get("FD", 0),  df.get("Min", 0))
+    df["TO/min"]  = per_min(df.get("TO", 0),  df.get("Min", 0))
+    df["STL/min"] = per_min(df.get("STL", 0), df.get("Min", 0))
+    df["BLK/min"] = per_min(df.get("BLK", 0), df.get("Min", 0))
+    df["Stocks/min"] = df["STL/min"] + df["BLK/min"]
+
+    # Usage/min proxy = (2PA + 3PA + 0.44*FTA + TO) / Min
+    usage_numer = df.get("2PA", 0).fillna(0) + df.get("3PA", 0).fillna(0) + 0.44 * df.get("FTA", 0).fillna(0) + df.get("TO", 0).fillna(0)
+    df["Usage/min"] = per_min(usage_numer, df.get("Min", 0))
 
     return df
 
 
-# ---------- ADVANCED / FEATURES ----------
-def compute_advanced(players_df: pd.DataFrame, gl_df: Optional[pd.DataFrame]) -> pd.DataFrame:
-    out = players_df.copy()
+def compute_bci(players_df: pd.DataFrame) -> pd.Series:
+    PTS_pm = players_df["PTS/min"]
+    TR_pm  = players_df["TR/min"]
+    AST_pm = players_df["AST/min"]
+    FD_pm  = players_df["FD/min"]
+    PIR_pm = per_min(players_df.get("PIR", 0), players_df.get("Min", 0))
 
-    # -- BCI (από προηγούμενη λογική)
-    PTS_pm = safe_div(out.get("PTS", 0), out.get("Min", 0))
-    TR_pm  = safe_div(out.get("TR", 0),  out.get("Min", 0))
-    AST_pm = safe_div(out.get("AST", 0), out.get("Min", 0))
-    FD_pm  = safe_div(out.get("FD", 0),  out.get("Min", 0))
-    PIR_pm = safe_div(out.get("PIR", 0), out.get("Min", 0))
+    raw = 0.35*PTS_pm + 0.25*TR_pm + 0.25*AST_pm + 0.10*FD_pm + 0.05*PIR_pm
+    min_bonus = (players_df.get("Min", 0).fillna(0) / 30.0).clip(0.6, 1.2)
+    raw = raw * min_bonus
+    if raw.max() > 0:
+        bci = 100 * raw / raw.max()
+    else:
+        bci = raw
+    return bci.round(1)
 
-    raw_bci = 0.35*PTS_pm + 0.25*TR_pm + 0.25*AST_pm + 0.10*FD_pm + 0.05*PIR_pm
-    min_bonus = (out.get("Min", 0).fillna(0) / 30.0).clip(0.6, 1.2)
-    raw_bci = raw_bci * min_bonus
-    out["BCI"] = (100 * safe_div(raw_bci, raw_bci.max())).round(1)
 
-    # -- Shooting totals (proxy) για efficiency
-    FGA = out.get("2PA", 0).fillna(0) + out.get("3PA", 0).fillna(0)
-    FGM = out.get("2PM", 0).fillna(0) + out.get("3PM", 0).fillna(0)
-    FTA = out.get("FTA", 0).fillna(0)
-    FTM = out.get("FTM", 0).fillna(0)
+def compute_stability_form3(players_df: pd.DataFrame, gl_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    adv = pd.DataFrame(index=players_df.index)
+    stability_map, form3_map = {}, {}
 
-    # -- eFG% & TS%
-    eFG = safe_div(out.get("2PM", 0)*2 + out.get("3PM", 0)*3, FGA*2).replace([np.inf, -np.inf], 0)
-    TS  = safe_div(out.get("PTS", 0), (2*(FGA + 0.44*FTA))).replace([np.inf, -np.inf], 0)
-
-    out["eFG%"] = (eFG*100).round(1)
-    out["TS%"]  = (TS*100).round(1)
-
-    # -- FT Rate
-    out["FT_rate"] = safe_div(FTA, FGA).round(3)
-
-    # -- Per-minute core
-    out["PTS_pm"] = PTS_pm.round(3)
-    out["TR_pm"]  = TR_pm.round(3)
-    out["AST_pm"] = AST_pm.round(3)
-    out["FD_pm"]  = FD_pm.round(3)
-    out["TO_pm"]  = safe_div(out.get("TO", 0), out.get("Min", 0)).round(3)
-    out["OR_pm"]  = safe_div(out.get("OR", 0), out.get("Min", 0)).round(3)
-    out["DR_pm"]  = safe_div(out.get("DR", 0), out.get("Min", 0)).round(3)
-    out["Stocks_pm"] = safe_div(out.get("STL", 0).fillna(0) + out.get("BLK", 0).fillna(0), out.get("Min", 0)).round(3)
-
-    # -- Usage proxy (per min)
-    out["USG_pm"] = safe_div(FGA + 0.44*FTA + out.get("TO", 0).fillna(0), out.get("Min", 0)).round(3)
-
-    # -- Stability & Form3 από gamelogs
-    out["Stability"] = np.nan
-    out["Form3"] = np.nan
     if gl_df is not None and not gl_df.empty:
-        key = "player_code" if "player_code" in gl_df.columns and "player_code" in out.columns else "Player"
-        if key in gl_df.columns and key in out.columns:
+        key = "player_code" if "player_code" in gl_df.columns else ("Player" if "Player" in gl_df.columns else None)
+        if key is not None:
             for pid, g in gl_df.groupby(key):
                 g = g.sort_values("game_date")
-                pir = pd.to_numeric(g.get("PIR"), errors="coerce")
+                pir = g.get("PIR")
                 if pir is None or pir.dropna().empty:
                     continue
                 last6 = pir.dropna().tail(6)
                 if len(last6) >= 3 and last6.mean() != 0:
                     cv = last6.std(ddof=0) / abs(last6.mean())
                     stab = (1.0 / (1.0 + cv)) * 100.0
-                    out.loc[out[key] == pid, "Stability"] = stab
+                    stability_map[pid] = float(np.clip(stab, 0, 100))
                 last3 = pir.dropna().tail(3)
                 if len(last3) > 0:
-                    out.loc[out[key] == pid, "Form3"] = last3.mean()
-    out["Stability"] = out["Stability"].round(1)
-    out["Form3"] = out["Form3"].round(1)
+                    form3_map[pid] = float(last3.mean())
 
-    # -- Κανονικοποιήσεις για scoring (0–100)
-    n_MIN      = minmax_0_100(out.get("Min", 0))
-    n_TS       = minmax_0_100(out.get("TS%", 0))
-    n_eFG      = minmax_0_100(out.get("eFG%", 0))
-    n_USGpm    = minmax_0_100(out.get("USG_pm", 0))
-    n_ASTpm    = minmax_0_100(out.get("AST_pm", 0))
-    n_TRpm     = minmax_0_100(out.get("TR_pm", 0))
-    n_PTSpm    = minmax_0_100(out.get("PTS_pm", 0))
-    n_FDpm     = minmax_0_100(out.get("FD_pm", 0))
-    n_Stocks   = minmax_0_100(out.get("Stocks_pm", 0))
-    n_TOpm_inv = 100 - minmax_0_100(out.get("TO_pm", 0))  # χαμηλό TO_pm = καλύτερο
-    n_2Ppct    = minmax_0_100(out.get("2P%", 0))
-    n_Form3    = minmax_0_100(out.get("Form3", 0).fillna(0))
-    n_Stab     = minmax_0_100(out.get("Stability", 0).fillna(0))
+            if "player_code" in players_df.columns and key == "player_code":
+                adv["Stability"] = players_df["player_code"].map(stability_map)
+                adv["Form3"] = players_df["player_code"].map(form3_map)
+            elif "Player" in players_df.columns and key == "Player":
+                adv["Stability"] = players_df["Player"].map(stability_map)
+                adv["Form3"] = players_df["Player"].map(form3_map)
 
-    # ---------- ΘΕΣΗ ΠΑΙΚΤΗ ----------
-    pos = out.get("PosRaw")
-    if pos is None:
-        out["Pos"] = "Unknown"
-    else:
-        pr = pos.astype(str).str.upper().fillna("")
-        cond_C = pr.str.contains("C")
-        cond_F = pr.str.contains("F")
-        cond_G = pr.str.contains("G")
-        out["Pos"] = np.where(cond_C, "C", np.where(cond_F, "F", np.where(cond_G, "G", "Unknown")))
+    adv["Stability"] = adv.get("Stability", pd.Series(index=players_df.index)).round(1)
+    adv["Form3"] = adv.get("Form3", pd.Series(index=players_df.index)).round(1)
+    return adv
 
-    # ---------- POSITION SCORES ----------
-    # Guards: MIN, USG, AST, TS, FD, Stocks, -TO, +Form/Stab
-    out["GuardScore"] = (
-        0.25*n_MIN + 0.20*n_USGpm + 0.20*n_ASTpm + 0.15*n_TS + 0.10*n_FDpm +
-        0.10*n_Stocks + 0.10*n_TOpm_inv + 0.05*n_Form3 + 0.05*n_Stab
+
+# ---------- POSITION-AWARE RANKING ----------
+def minmax(s: pd.Series) -> pd.Series:
+    s = s.replace([np.inf, -np.inf], np.nan)
+    if s.max(skipna=True) == s.min(skipna=True):
+        return pd.Series(0.5, index=s.index)  # επίπεδο -> ουδέτερο
+    return (s - s.min(skipna=True)) / (s.max(skipna=True) - s.min(skipna=True))
+
+
+def ensure_position_column(df: pd.DataFrame) -> pd.DataFrame:
+    if "Position" in df.columns:
+        return df
+    st.warning(
+        "Δεν βρέθηκε στήλη θέσης (Position). Μπορείς να ορίσεις manual mapping "
+        "στην ενότητα: **Position mapping (optional)**. Διαφορετικά ο πίνακας προτάσεων δεν θα εμφανιστεί."
     )
-
-    # Forwards: MIN, PTS_pm, TR_pm, TS, FD, Stocks, -TO, +Form/Stab
-    out["ForwardScore"] = (
-        0.25*n_MIN + 0.18*n_PTSpm + 0.18*n_TRpm + 0.12*n_TS + 0.10*n_FDpm +
-        0.10*n_Stocks + 0.07*n_TOpm_inv + 0.05*n_Form3 + 0.05*n_Stab
-    )
-
-    # Centers: MIN, TR_pm, 2P%, BLK/Stocks, FD, -TO, +Form/Stab
-    # (Δίνουμε έμφαση σε 2P% αντί για TS, και λίγο παραπάνω σε Stocks)
-    out["CenterScore"] = (
-        0.25*n_MIN + 0.25*n_TRpm + 0.15*n_2Ppct + 0.15*n_Stocks + 0.10*n_FDpm +
-        0.10*n_TOpm_inv + 0.05*n_Form3 + 0.05*n_Stab
-    )
-
-    # Στρογγυλοποιήσεις
-    for c in ["GuardScore", "ForwardScore", "CenterScore"]:
-        out[c] = out[c].round(1)
-
-    return out
+    df["Position"] = None
+    return df
 
 
-def filter_players(df: pd.DataFrame, q: str, team: str, min_gp: int) -> pd.DataFrame:
-    res = df.copy()
-    if q:
-        qlow = q.lower().strip()
-        res = res[
-            res.get("Player", pd.Series(index=res.index, dtype=str)).fillna("").str.lower().str.contains(qlow)
-            | res.get("player_code", pd.Series(index=res.index, dtype=str)).fillna("").astype(str).str.contains(qlow)
-            | res.get("Team", pd.Series(index=res.index, dtype=str)).fillna("").str.lower().str.contains(qlow)
+def apply_manual_position_mapping(df: pd.DataFrame, mapping_text: str) -> pd.DataFrame:
+    """
+    mapping_text: lines μορφής  PlayerName,POS  ή  player_code,POS
+    POS ∈ {G, F, C} (επιτρέπεται και σύνθετο π.χ. 'G/F' — θα πάρουμε το πρώτο γράμμα)
+    """
+    if not mapping_text.strip():
+        return df
+    mp = {}
+    for line in mapping_text.strip().splitlines():
+        parts = [p.strip() for p in line.split(",") if p.strip()]
+        if len(parts) >= 2:
+            key, pos = parts[0], parts[1]
+            mp[key] = pos
+
+    # πρώτα με player_code αν υπάρχει
+    if "player_code" in df.columns:
+        df.loc[df["player_code"].astype(str).isin(mp.keys()), "Position"] = (
+            df["player_code"].astype(str).map(mp)
+        )
+    # μετά με Player name
+    if "Player" in df.columns:
+        df.loc[df["Player"].astype(str).isin(mp.keys()), "Position"] = (
+            df["Player"].astype(str).map(mp)
+        )
+
+    # καθάρισε σε G/F/C (αν δόθηκε G/F, πάρε το πρώτο)
+    df["Position"] = df["Position"].apply(lambda x: str(x)[0].upper() if pd.notna(x) else x)
+    return df
+
+
+def position_score(df: pd.DataFrame, role: str) -> pd.Series:
+    """
+    Φτιάχνει σύνθετο score 0..100 ανά ρόλο (G/F/C) από normalized components.
+    Χρησιμοποιεί season-based features (per-minute + efficiency).
+    """
+
+    # Availability multiplier: πιο κοντά στα 30' → καλύτερα
+    avail = (df.get("Min", 0).fillna(0) / 30.0).clip(0.6, 1.2)
+
+    # Θετικά components (normalize 0..1)
+    ts = df.get("TS%", 0).clip(0, 1)              # 0..1
+    ef = df.get("eFG%", 0).clip(0, 1)             # 0..1
+    twop = (df.get("2P%", 0)/100.0).clip(0, 1)    # 0..1
+    ftr = df.get("FTR", 0).clip(0, None)          # >0
+    usage = minmax(df.get("Usage/min", 0))
+    trm = minmax(df.get("TR/min", 0))
+    astm = minmax(df.get("AST/min", 0))
+    fdm = minmax(df.get("FD/min", 0))
+    stocksm = minmax(df.get("Stocks/min", 0))
+
+    # Αρνητικό: fewer is better → 1 - norm
+    tom = 1 - minmax(df.get("TO/min", 0))
+
+    if role == "G":
+        # Guards: usage & creation & efficiency, draw fouls, protect ball, some stocks
+        raw = (
+            0.25*usage + 0.25*astm + 0.20*ts + 0.10*fdm +
+            0.10*ef + 0.05*stocksm + 0.05*tom
+        )
+    elif role == "F":
+        # Forwards: glass + usage + efficiency + creation + fouls + stocks, penalty TO
+        raw = (
+            0.25*trm + 0.20*usage + 0.15*ts + 0.10*ef +
+            0.10*fdm + 0.10*astm + 0.05*stocksm + 0.05*tom
+        )
+    else:  # "C"
+        # Centers: rebounds + rim protection + 2P% + fouls drawn, then usage/TS, penalty TO
+        raw = (
+            0.30*trm + 0.20*stocksm + 0.15*twop + 0.15*fdm +
+            0.10*usage + 0.05*ts + 0.05*tom
+        )
+
+    score = raw * avail
+    return (100 * score / score.max()) if score.max() > 0 else (score * 0)
+
+
+def build_position_tables(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    out = {}
+    for role, topk in [("C", 10), ("F", 15), ("G", 20)]:
+        part = df[df["Position"].fillna("").str.upper().str.startswith(role)].copy()
+        if part.empty:
+            out[role] = part
+            continue
+        part[f"{role}_Score"] = position_score(part, role).round(1)
+        part = part.sort_values(f"{role}_Score", ascending=False, na_position="last")
+        keep_cols = [
+            "Player", "Team", "Position", "Min", "PTS", "TR", "AST", "STL", "BLK", "FD", "TO",
+            "TS%", "eFG%", "FTR", "Usage/min", "TR/min", "AST/min", "FD/min", "Stocks/min", "TO/min",
+            "PIR", "BCI", f"{role}_Score"
         ]
-    if team and team != "(Όλες)":
-        res = res[res.get("Team", pd.Series(index=res.index, dtype=str)).fillna("").str.lower().eq(team.lower())]
-    if "GP" in res.columns and min_gp > 0:
-        res = res[res["GP"].fillna(0) >= min_gp]
-    return res
+        keep_cols = [c for c in keep_cols if c in part.columns]
+        out[role] = part[keep_cols].head(topk).reset_index(drop=True)
+    return out
 
 
 # ---------- UI ----------
 st.title("EuroLeague Fantasy – Player Game Logs")
 
+# Επιλογές header
 c1, c2, c3 = st.columns([1, 1, 1])
 with c1:
     season = st.selectbox("Season", ["2025"], index=0)
@@ -376,34 +450,27 @@ if players_df_raw is None:
     st.error(f"Δεν βρέθηκε το αρχείο season averages: `{players_path}`.")
     st.stop()
 
+# Normalize + base columns
 players_df_norm, base_cols, target_cols = normalize_players_df(players_df_raw)
 
+# Gamelogs (optional)
 gamelogs_df = None
 if gamelogs_df_raw is not None and not gamelogs_df_raw.empty:
     gamelogs_df = normalize_gamelogs_df(gamelogs_df_raw.copy())
 
-players_df = compute_advanced(players_df_norm, gamelogs_df)
+# Add features + BCI + Stability/Form3
+players_df_feat = add_feature_columns(players_df_norm)
+players_df_feat["BCI"] = compute_bci(players_df_feat)
 
-# Εμφάνισε πάντα στήλες Stability/Form3
+adv_sf = compute_stability_form3(players_df_feat, gamelogs_df)
+players_df = players_df_feat.join(adv_sf)
+
+# Εξασφάλισε να υπάρχουν πάντα στήλες Stability/Form3
 for _col in ["Stability", "Form3"]:
     if _col not in players_df.columns:
         players_df[_col] = np.nan
 
-# Τελικές στήλες (season table)
-final_cols = []
-for c in target_cols:
-    if c in players_df.columns:
-        final_cols.append(c)
-
-# Προσθέτουμε και τα νέα advanced στο season table (μπορείς να αφαιρέσεις όποια δεν θες)
-season_extra = [
-    "TS%", "eFG%", "FT_rate",
-    "USG_pm", "PTS_pm", "TR_pm", "AST_pm", "FD_pm", "TO_pm", "Stocks_pm",
-]
-for c in season_extra:
-    if c in players_df.columns and c not in final_cols:
-        final_cols.append(c)
-
+# Φίλτρα / αναζήτηση
 teams_list = ["(Όλες)"] + sorted(players_df.get("Team", pd.Series(dtype=str)).dropna().astype(str).unique(), key=lambda x: x.lower())
 f1, f2, f3 = st.columns([2, 1, 1])
 with f1:
@@ -413,103 +480,141 @@ with f2:
 with f3:
     min_gp = st.number_input("Min GP", min_value=0, max_value=50, value=0, step=1)
 
+def filter_players(df: pd.DataFrame, q: str, team: str, min_gp: int) -> pd.DataFrame:
+    res = df.copy()
+    if q:
+        qlow = q.lower().strip()
+        res = res[
+            res.get("Player", pd.Series(index=res.index, dtype=str)).fillna("").str.lower().str.contains(qlow)
+            | res.get("player_code", pd.Series(index=res.index, dtype=str)).fillna("").astype(str).str.contains(qlow)
+            | res.get("Team", pd.Series(index=res.index, dtype=str)).fillna("").str.lower().str.contains(qlow)
+        ]
+    if team and team != "(Όλες)":
+        res = res[res.get("Team", pd.Series(index=res.index, dtype=str)).fillna("").str.lower().eq(team.lower())]
+    if "GP" in res.columns and min_gp > 0:
+        res = res[res["GP"].fillna(0) >= min_gp]
+    return res
+
 filtered_players = filter_players(players_df, q, team_sel, min_gp)
 
-st.subheader("Season Averages (με ζητούμενες στήλες + Advanced)")
+# Στήλες για Season Averages (ζητούμενες + advanced)
+final_cols = []
+for c in target_cols:
+    if c in filtered_players.columns:
+        final_cols.append(c)
+
+st.subheader("Season Averages (με τις ζητούμενες στήλες + Advanced)")
 st.dataframe(
     filtered_players[final_cols].reset_index(drop=True),
     use_container_width=True,
     hide_index=True,
 )
 
-# ---------- Επιλογή παίκτη & Game-by-Game ----------
-left, right = st.columns([1, 2])
-with left:
-    st.markdown("### Επιλογή παίκτη")
-    options = (
-        filtered_players[["Player", "player_code"]]
-        .dropna(subset=["Player"])
-        .drop_duplicates()
-        .sort_values("Player")
-        .assign(label=lambda d: d["Player"] + "  (" + d["player_code"].astype(str) + ")")
-    )
-    if len(options) == 0:
-        selected_label = None
-        st.info("Κανένα αποτέλεσμα με τα τρέχοντα φίλτρα.")
-    else:
-        selected_label = st.selectbox(
-            "Διάλεξε παίκτη",
-            options["label"].tolist(),
-            index=0,
-            key="player_select",
+# ----------------- ANALYTICS TABS -----------------
+tabs = st.tabs(["📈 Player details (gamelogs)", "🧮 Advanced features", "🏆 Προτεινόμενα Picks (G/F/C)"])
+
+# --- TAB 1: Player details ---
+with tabs[0]:
+    left, right = st.columns([1, 2])
+    with left:
+        st.markdown("### Επιλογή παίκτη")
+        options = (
+            filtered_players[["Player", "player_code"]]
+            .dropna(subset=["Player"])
+            .drop_duplicates()
+            .sort_values("Player")
+            .assign(label=lambda d: d["Player"] + "  (" + d["player_code"].astype(str) + ")")
         )
-        selected_player_code = None
-        if selected_label:
-            sel_row = options[options["label"] == selected_label].iloc[0]
-            selected_player_code = str(sel_row["player_code"])
-
-with right:
-    st.markdown("### Αναλυτικά (Game-by-Game)")
-    if gamelogs_df is None or gamelogs_df.empty:
-        st.warning("Δεν υπάρχουν gamelogs στο repository για να εμφανιστούν αναλυτικά.")
-    else:
-        player_gl = pd.DataFrame()
-        if selected_label:
-            if "player_code" in gamelogs_df.columns and selected_player_code is not None:
-                player_gl = gamelogs_df[gamelogs_df["player_code"].astype(str) == selected_player_code]
-            if player_gl.empty and "Player" in gamelogs_df.columns:
-                p_name = sel_row["Player"]
-                player_gl = gamelogs_df[gamelogs_df["Player"].astype(str).str.lower() == str(p_name).lower()]
-
-        if selected_label and not player_gl.empty:
-            csum1, csum2, csum3 = st.columns(3)
-            with csum1: st.metric("Games", len(player_gl))
-            with csum2: st.metric("PTS (avg)", round(player_gl.get("PTS", pd.Series([0])).mean(), 2))
-            with csum3: st.metric("PIR (avg)", round(player_gl.get("PIR", pd.Series([0])).mean(), 2))
-
-            # Charts
-            if "game_date" in player_gl.columns:
-                if "PTS" in player_gl.columns:
-                    sub = player_gl[["game_date", "PTS"]].dropna().sort_values("game_date").set_index("game_date")
-                    st.line_chart(sub, height=180, use_container_width=True)
-                if "PIR" in player_gl.columns:
-                    sub = player_gl[["game_date", "PIR"]].dropna().sort_values("game_date").set_index("game_date")
-                    st.line_chart(sub, height=180, use_container_width=True)
-
-            gl_cols_pref = ["game_date", "Team", "opponent", "MIN", "PTS", "TR", "AST", "STL", "TO", "BLK", "FC", "FD", "PIR"]
-            gl_cols = [c for c in gl_cols_pref if c in player_gl.columns]
-            st.dataframe(player_gl[gl_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+        if len(options) == 0:
+            selected_label = None
+            st.info("Κανένα αποτέλεσμα με τα τρέχοντα φίλτρα.")
         else:
+            selected_label = st.selectbox("Διάλεξε παίκτη", options["label"].tolist(), index=0, key="player_select")
+
+            selected_player_code = None
             if selected_label:
-                st.info("Δεν βρέθηκαν gamelogs για τον συγκεκριμένο παίκτη (ή το αρχείο είναι κενό).")
+                sel_row = options[options["label"] == selected_label].iloc[0]
+                selected_player_code = str(sel_row["player_code"])
 
-st.divider()
+    with right:
+        st.markdown("### Αναλυτικά (Game-by-Game)")
+        if gamelogs_df is None or gamelogs_df.empty:
+            st.warning("Δεν υπάρχουν gamelogs στο repository για να εμφανιστούν αναλυτικά.")
+        else:
+            player_gl = pd.DataFrame()
+            if selected_label:
+                if "player_code" in gamelogs_df.columns and selected_player_code is not None:
+                    player_gl = gamelogs_df[gamelogs_df["player_code"].astype(str) == selected_player_code]
+                if player_gl.empty and "Player" in gamelogs_df.columns:
+                    p_name = sel_row["Player"]
+                    player_gl = gamelogs_df[gamelogs_df["Player"].astype(str).str.lower() == str(p_name).lower()]
 
-# ---------- RECOMMENDATIONS ----------
-st.header("🔮 Position-based Recommendations (PIR potential)")
+            if selected_label and not player_gl.empty:
+                csum1, csum2, csum3 = st.columns(3)
+                with csum1: st.metric("Games", len(player_gl))
+                with csum2: st.metric("PTS (avg)", round(player_gl.get("PTS", pd.Series([0])).mean(), 2))
+                with csum3: st.metric("PIR (avg)", round(player_gl.get("PIR", pd.Series([0])).mean(), 2))
 
-def rec_table(df: pd.DataFrame, pos_letter: str, topn: int, score_col: str, title: str):
-    sub = df[df.get("Pos") == pos_letter].copy()
-    if sub.empty:
-        st.warning(f"Δεν βρέθηκαν παίκτες με θέση {pos_letter}.")
-        return
-    cols_show = [
-        "Player", "Team", "Pos", score_col, "Min", "Form3", "Stability",
-        "PTS_pm", "TR_pm", "AST_pm", "TS%", "FD_pm", "TO_pm", "Stocks_pm", "BCI", "PIR"
+                if "game_date" in player_gl.columns:
+                    if "PTS" in player_gl.columns:
+                        sub = player_gl[["game_date", "PTS"]].dropna().sort_values("game_date").set_index("game_date")
+                        st.line_chart(sub, height=180, use_container_width=True)
+                    if "PIR" in player_gl.columns:
+                        sub = player_gl[["game_date", "PIR"]].dropna().sort_values("game_date").set_index("game_date")
+                        st.line_chart(sub, height=180, use_container_width=True)
+
+                gl_cols_pref = ["game_date", "Team", "opponent", "MIN", "PTS", "TR", "AST", "STL", "TO", "BLK", "FC", "FD", "PIR"]
+                gl_cols = [c for c in gl_cols_pref if c in player_gl.columns]
+                st.dataframe(player_gl[gl_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+            else:
+                if selected_label:
+                    st.info("Δεν βρέθηκαν gamelogs για τον συγκεκριμένο παίκτη (ή το αρχείο είναι κενό).")
+
+# --- TAB 2: Advanced features table ---
+with tabs[1]:
+    st.markdown("### Advanced feature set (season-based)")
+    feat_cols = [
+        "Player", "Team", "Position", "Min", "PIR", "BCI",
+        "TS%", "eFG%", "FTR",
+        "Usage/min", "PTS/min", "TR/min", "AST/min", "FD/min", "Stocks/min", "TO/min",
+        "Stability", "Form3"
     ]
-    cols = [c for c in cols_show if c in sub.columns]
-    sub = sub.sort_values(score_col, ascending=False).head(topn)
-    st.subheader(title)
-    st.dataframe(sub[cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+    feat_cols = [c for c in feat_cols if c in filtered_players.columns]
+    st.dataframe(filtered_players[feat_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
 
-# 10 Centers, 15 Forwards, 20 Guards
-rec_table(players_df, "C", 10, "CenterScore",  "Top Centers (10)")
-rec_table(players_df, "F", 15, "ForwardScore", "Top Forwards (15)")
-rec_table(players_df, "G", 20, "GuardScore",   "Top Guards (20)")
+# --- TAB 3: Position-aware Picks ---
+with tabs[2]:
+    st.markdown("### Position mapping (optional)")
+    st.caption("Αν δεν υπάρχει στήλη θέσης στο CSV, μπορείς να δώσεις manual mapping σε μορφή `Player,POS` ή `player_code,POS` (POS ∈ G/F/C)."
+               " Μία γραμμή ανά παίκτη. Αν δοθεί π.χ. `G/F`, λαμβάνεται το πρώτο γράμμα.")
+    mapping_text = st.text_area("Manual mapping", value="", height=120)
 
-st.caption(
-    "Οι βαθμολογίες ανά θέση ζυγίζουν διαφορετικά τα features (λεπτά, usage, αποδοτικότητα, "
-    "ριμπάουντ/δημιουργία/στοκς, λάθη, καθώς και πρόσφατη φόρμα/σταθερότητα). "
-    "Αν λείπει τελείως η θέση από το dataset, χαρτογραφείται ως 'Unknown' και ο παίκτης δεν "
-    "εμφανίζεται στα position tables."
-)
+    players_pos = ensure_position_column(filtered_players.copy())
+    if mapping_text.strip():
+        players_pos = apply_manual_position_mapping(players_pos, mapping_text)
+
+    # Αν υπάρχουν θέσεις, φτιάξε προτάσεις
+    if players_pos["Position"].notna().any():
+        pos_tables = build_position_tables(players_pos)
+
+        ctab, ftab, gtab = st.tabs(["🏀 Centers (Top 10)", "🛡️ Forwards (Top 15)", "⚡ Guards (Top 20)"])
+
+        with ctab:
+            if pos_tables["C"].empty:
+                st.info("Δεν υπάρχουν διαθέσιμοι Centers (λείπει Position mapping; δώσε στο πεδίο από πάνω).")
+            else:
+                st.dataframe(pos_tables["C"], use_container_width=True, hide_index=True)
+
+        with ftab:
+            if pos_tables["F"].empty:
+                st.info("Δεν υπάρχουν διαθέσιμοι Forwards (λείπει Position mapping; δώσε στο πεδίο από πάνω).")
+            else:
+                st.dataframe(pos_tables["F"], use_container_width=True, hide_index=True)
+
+        with gtab:
+            if pos_tables["G"].empty:
+                st.info("Δεν υπάρχουν διαθέσιμοι Guards (λείπει Position mapping; δώσε στο πεδίο από πάνω).")
+            else:
+                st.dataframe(pos_tables["G"], use_container_width=True, hide_index=True)
+    else:
+        st.warning("Δεν υπάρχουν διαθέσιμες θέσεις (Position). Πρόσθεσε mapping για να δεις προτάσεις G/F/C.")
