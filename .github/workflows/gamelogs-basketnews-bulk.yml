@@ -1,0 +1,66 @@
+name: Build gamelogs (BasketNews, bulk)
+
+on:
+  workflow_dispatch:
+    inputs:
+      season:      { description: "Season", required: true,  default: "2025" }
+      competition: { description: "E or U", required: true,  default: "E" }
+      mode:        { description: "Mode",   required: true,  default: "perGame" }
+      limit:       { description: "Limit players (0=all)", required: false, default: "20" }
+      delay_ms:    { description: "Delay between requests (ms)", required: false, default: "300" }
+      out_dir:     { description: "Output folder", required: true, default: "out" }
+
+permissions:
+  contents: write
+
+jobs:
+  bulk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests lxml html5lib
+
+      - name: Ensure mapping exists (or create template)
+        run: |
+          if [ ! -f "bn_map.csv" ]; then
+            python bn_make_mapping.py --season "${{ github.event.inputs.season }}" --mode "${{ github.event.inputs.mode }}" --out_csv bn_map.csv
+            echo "::warning ::Δημιουργήθηκε bn_map.csv. Συμπλήρωσε τη στήλη bn_path και ξανατρέξε."
+            exit 1
+          fi
+          echo "Using bn_map.csv:"
+          head -n 5 bn_map.csv || true
+
+      - name: Run BN bulk
+        run: |
+          python bn_bulk.py \
+            --season "${{ github.event.inputs.season }}" \
+            --competition "${{ github.event.inputs.competition }}" \
+            --mode "${{ github.event.inputs.mode }}" \
+            --map_csv bn_map.csv \
+            --limit ${{ github.event.inputs.limit }} \
+            --delay_ms ${{ github.event.inputs.delay_ms }} \
+            --out_dir "${{ github.event.inputs.out_dir }}"
+
+      - name: List outputs
+        run: ls -lah "${{ github.event.inputs.out_dir }}" || true
+
+      - name: Commit & push outputs
+        run: |
+          set -e
+          git config --global safe.directory "$GITHUB_WORKSPACE"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add "${{ github.event.inputs.out_dir }}/player_gamelogs_${{ github.event.inputs.season }}_${{ github.event.inputs.mode }}.csv" 2>/dev/null || true
+          git commit -m "data: BN gamelogs bulk ${{ github.event.inputs.season }} (${{ github.event.inputs.mode }}) [run #${{ github.run_number }}]" || echo "No changes to commit"
+          git -c rebase.autoStash=true pull --rebase
+          git push
