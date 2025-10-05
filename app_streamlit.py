@@ -26,6 +26,15 @@ def load_csv(path: Path) -> Optional[pd.DataFrame]:
             continue
     return None
     
+def scale_0_100_robust(s: pd.Series, low_q=0.05, high_q=0.95) -> pd.Series:
+    """Robust min–max σε 0..100 χρησιμοποιώντας τα quantiles (κόβει outliers)."""
+    s = s.astype(float).replace([np.inf, -np.inf], np.nan)
+    lo, hi = s.quantile(low_q), s.quantile(high_q)
+    if pd.isna(lo) or pd.isna(hi) or hi == lo:
+        return pd.Series(50.0, index=s.index)  # ουδέτερο αν δεν γίνεται κλίμακα
+    s_clip = s.clip(lo, hi)
+    return ((s_clip - lo) / (hi - lo) * 100.0)
+    
 def universal_score_raw(df: pd.DataFrame) -> pd.Series:
     avail = (df.get("Min", 0).fillna(0) / 30.0).clip(0.6, 1.2)
 
@@ -521,6 +530,30 @@ players_df["All_Score"] = (players_df["All_Score_raw"] / max_all * 100).round(1)
 
 # --- ΝΕΟ: All_Score ως global advanced στήλη ---
 players_df["All_Score"] = universal_score(players_df)
+# --- PredictScore (0..100): blend All_Score + Form3 + Stability, με gates ---
+form3_norm = scale_0_100_robust(players_df.get("Form3", pd.Series(index=players_df.index)))
+stab_norm  = players_df.get("Stability", pd.Series(index=players_df.index)).astype(float)
+players_df["PredictScore"] = (
+    0.60*players_df["All_Score"].fillna(0) +
+    0.30*form3_norm.fillna(50) +
+    0.10*stab_norm.fillna(50)
+) * (players_df.get("Min", 0).fillna(0)/30.0).clip(0.6, 1.15)
+players_df["PredictScore"] = players_df["PredictScore"].clip(0, 100).round(1)
+
+# Βάρη (μπορείς να τα αλλάξεις εύκολα)
+w_all, w_form3, w_stab = 0.60, 0.30, 0.10
+
+base = (
+    w_all   * players_df["All_Score"].astype(float).fillna(0) +
+    w_form3 * form3_norm.fillna(50.0) +   # αν λείπουν gamelogs, ουδέτερο ~50
+    w_stab  * stab_norm.fillna(50.0)
+)
+
+# Gates: λεπτά & μικρό penalty για χαμηλό GP
+min_mult = (players_df.get("Min", 0).fillna(0) / 30.0).clip(0.6, 1.15)
+gp_mult  = np.where(players_df.get("GP", 0).fillna(0) >= 3, 1.0, 0.90)
+
+players_df["PredictScore"] = (base * min_mult * gp_mult).clip(0, 100).round(1)
 
 
 # Εξασφάλισε να υπάρχουν πάντα στήλες Stability/Form3
@@ -560,8 +593,12 @@ for c in target_cols:
     if c in filtered_players.columns:
         final_cols.append(c)
 # πρόσθεσε All_Score αν δεν υπάρχει ήδη
-if "All_Score" not in final_cols and "All_Score" in filtered_players.columns:
+# Season table – πρόσθεσε Always τις extra στήλες αν υπάρχουν
+if "All_Score" in filtered_players.columns and "All_Score" not in final_cols:
     final_cols.append("All_Score")
+if "PredictScore" in filtered_players.columns and "PredictScore" not in final_cols:
+    final_cols.append("PredictScore")
+
 
 
 st.subheader("Season Averages (με τις ζητούμενες στήλες + Advanced)")
@@ -640,13 +677,12 @@ with tabs[0]:
 # --- TAB 2: Advanced features table ---
 with tabs[1]:
     st.markdown("### Advanced feature set (season-based)")
-    feat_cols = [
+   feat_cols = [
     "Player", "Team", "Position", "Min", "PIR", "BCI",
     "TS%", "eFG%", "FTR",
     "Usage/min", "PTS/min", "TR/min", "AST/min", "FD/min", "Stocks/min", "TO/min",
-    "Stability", "Form3", "All_Score"   # <--- πρόσθεσε εδώ
+    "Stability", "Form3", "All_Score", "PredictScore"
     ]
-
     feat_cols = [c for c in feat_cols if c in filtered_players.columns]
     st.dataframe(filtered_players[feat_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
 
@@ -690,15 +726,17 @@ with tabs[2]:
 # --- TAB 4: Top 30 ανεξάρτητα θέσης ---
 with tabs[3]:
     st.markdown("### 🔥 Top 30 (All positions)")
-    top_all = filtered_players.copy()  # ΔΕΝ ξαναϋπολογίζουμε All_Score εδώ
-    top_all = top_all.sort_values("All_Score", ascending=False, na_position="last").head(30)
+    metric = st.radio("Ταξινόμηση κατά:", ["PredictScore", "All_Score", "PIR"], index=0, horizontal=True)
+    sort_col = metric
+    top_all = filtered_players.sort_values(sort_col, ascending=False, na_position="last").head(30)
 
     show_cols = [
         "Player", "Team", "Min", "PIR",
         "TS%", "eFG%", "FTR",
         "Usage/min", "PTS/min", "TR/min", "AST/min", "FD/min", "Stocks/min", "TO/min",
-        "BCI", "Stability", "Form3", "All_Score"
+        "BCI", "Stability", "Form3", "All_Score", "PredictScore"
     ]
     show_cols = [c for c in show_cols if c in top_all.columns]
     st.dataframe(top_all[show_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+
 
