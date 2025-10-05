@@ -677,7 +677,7 @@ with tabs[0]:
 # --- TAB 2: Advanced features table ---
 with tabs[1]:
     st.markdown("### Advanced feature set (season-based)")
-   feat_cols = [
+    feat_cols = [
     "Player", "Team", "Position", "Min", "PIR", "BCI",
     "TS%", "eFG%", "FTR",
     "Usage/min", "PTS/min", "TR/min", "AST/min", "FD/min", "Stocks/min", "TO/min",
