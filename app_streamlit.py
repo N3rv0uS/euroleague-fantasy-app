@@ -1,238 +1,324 @@
 # app_streamlit.py
 import os
-import sys
-import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional, Tuple
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
-# ==================== CONFIG ====================
+# ---------- ΡΥΘΜΙΣΕΙΣ ----------
+OUT_DIR = Path("out")  # φάκελος με τα CSV
 st.set_page_config(page_title="EuroLeague Fantasy – Player Game Logs", layout="wide")
-OUT_DIR = Path("out")
-DEFAULT_SEASON = "2025"
-DEFAULT_COMPETITION = "E"  # E = EuroLeague, U = EuroCup
-DEFAULT_MODE = "perGame"
 
-# ---------- (optional) simple password gate ----------
-PW_OK = True
-if "general" in st.secrets and "password" in st.secrets["general"]:
-    st.sidebar.text_input("Password", type="password", key="pw")
-    PW_OK = st.session_state.get("pw", "") == st.secrets["general"]["password"]
-    if not PW_OK:
-        st.stop()
+# ---------- ΒΟΗΘΗΤΙΚΑ ----------
+@st.cache_data(show_spinner=False)
+def load_csv(path: Path) -> Optional[pd.DataFrame]:
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        # δοκίμασε και UTF-16/semicolon αν χρειαστεί
+        try:
+            df = pd.read_csv(path, sep=";")
+        except Exception:
+            return None
+    # καθάρισμα whitespaces στα ονόματα στηλών
+    df.columns = [c.strip() for c in df.columns]
+    return df
 
+def make_players_path(season: str, mode: str) -> Path:
+    return OUT_DIR / f"players_{season}_{mode}.csv"
+
+def make_gamelogs_path(season: str, mode: str) -> Path:
+    return OUT_DIR / f"player_gamelogs_{season}_{mode}.csv"
+
+def normalize_players_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Φέρνει τα βασικά aliases σε κοινά ονόματα πεδίων."""
+    # πιθανά aliases
+    rename_map = {}
+    for a in ["player_code", "code", "playerCode"]:
+        if a in df.columns: rename_map[a] = "player_code"
+    for a in ["player_name", "name", "playerName"]:
+        if a in df.columns: rename_map[a] = "player_name"
+    for a in ["team_code", "player_team_code", "teamCode", "team"]:
+        if a in df.columns: rename_map[a] = "team_code"
+    for a in ["team_name", "player_team_name", "teamName"]:
+        if a in df.columns: rename_map[a] = "team_name"
+    for a in ["season", "Season"]:
+        if a in df.columns: rename_map[a] = "season"
+    for a in ["competition", "Competition"]:
+        if a in df.columns: rename_map[a] = "competition"
+
+    df = df.rename(columns=rename_map)
+
+    # Στήλες που συνήθως θέλουμε να δείχνουμε στον πίνακα
+    preferred_order = [
+        "player_name", "player_code", "team_code", "team_name",
+        "gamesPlayed", "minutesPlayed", "pointsScored",
+        "totalRebounds", "assists", "steals", "turnovers", "blocks",
+        "foulsDrawn", "pir",
+    ]
+    # Συχνά aliases stats
+    alt = {
+        "gamesPlayed": ["GP", "games", "G"],
+        "minutesPlayed": ["MIN", "Minutes"],
+        "pointsScored": ["PTS", "Points"],
+        "totalRebounds": ["REB", "Reb", "TRB"],
+        "assists": ["AST", "Assists"],
+        "steals": ["STL"],
+        "turnovers": ["TOV"],
+        "blocks": ["BLK"],
+        "foulsDrawn": ["FLS_RV", "FD", "FDR"],
+        "pir": ["PIR", "EFF", "efficiency"],
+    }
+    for canonical, alts in alt.items():
+        if canonical not in df.columns:
+            for a in alts:
+                if a in df.columns:
+                    df = df.rename(columns={a: canonical})
+                    break
+
+    # Βεβαιώσου ότι υπάρχουν οι βασικές στήλες έστω κενές
+    for c in ["player_name", "player_code", "team_code", "team_name"]:
+        if c not in df.columns:
+            df[c] = None
+
+    # Ταξινόμηση
+    if "pir" in df.columns:
+        df = df.sort_values("pir", ascending=False, na_position="last")
+
+    # Επιλογή εμφάνισης: μόνο στήλες που υπάρχουν
+    show_cols = [c for c in preferred_order if c in df.columns]
+    # πρόσθεσε χρήσιμες αν υπάρχουν
+    for c in ["twoPointersPercentage", "threePointersPercentage", "freeThrowsPercentage"]:
+        if c in df.columns and c not in show_cols:
+            show_cols.append(c)
+    # πάντα κράτα τα βασικά meta στο τέλος
+    for c in ["season", "competition", "mode"]:
+        if c in df.columns and c not in show_cols:
+            show_cols.append(c)
+
+    return df, show_cols
+
+def normalize_gamelogs_df(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {}
+    for a in ["player_code", "code", "playerCode"]:
+        if a in df.columns: rename_map[a] = "player_code"
+    for a in ["player_name", "name", "playerName"]:
+        if a in df.columns: rename_map[a] = "player_name"
+    for a in ["team_code", "teamCode", "Team"]:
+        if a in df.columns: rename_map[a] = "team_code"
+    for a in ["opponent", "opponent_code", "Opp", "Opponent"]:
+        if a in df.columns: rename_map[a] = "opponent"
+    for a in ["game_date", "date", "gameDate", "Date"]:
+        if a in df.columns: rename_map[a] = "game_date"
+
+    df = df.rename(columns=rename_map)
+
+    # Parse ημερομηνίας
+    if "game_date" in df.columns:
+        df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
+
+    # Stats aliases
+    alt = {
+        "MIN": ["minutesPlayed", "Min", "Minutes"],
+        "PTS": ["pointsScored", "Points"],
+        "REB": ["totalRebounds", "Reb", "TRB"],
+        "AST": ["assists"],
+        "STL": ["steals"],
+        "TOV": ["turnovers"],
+        "BLK": ["blocks"],
+        "FLS_CM": ["foulsCommited", "foulsCommitted", "PF"],
+        "FLS_RV": ["foulsDrawn", "FD"],
+        "PIR": ["pir", "EFF", "efficiency"],
+    }
+    for canonical, alts in alt.items():
+        if canonical not in df.columns:
+            for a in alts:
+                if a in df.columns:
+                    df = df.rename(columns={a: canonical})
+                    break
+
+    # Ταξινόμηση
+    if "game_date" in df.columns:
+        df = df.sort_values("game_date", ascending=False, na_position="last")
+
+    return df
+
+def filter_players(df: pd.DataFrame, q: str, team: str, min_gp: int) -> pd.DataFrame:
+    res = df.copy()
+    if q:
+        qlow = q.lower().strip()
+        res = res[
+            res["player_name"].fillna("").str.lower().str.contains(qlow)
+            | res["player_code"].fillna("").astype(str).str.contains(qlow)
+            | res.get("team_name", pd.Series(index=res.index, dtype=str)).fillna("").str.lower().str.contains(qlow)
+            | res.get("team_code", pd.Series(index=res.index, dtype=str)).fillna("").str.lower().str.contains(qlow)
+        ]
+    if team and team != "(Όλες)":
+        teamlow = team.lower()
+        mask = (
+            res.get("team_code", pd.Series(index=res.index, dtype=str)).fillna("").str.lower().eq(teamlow)
+            | res.get("team_name", pd.Series(index=res.index, dtype=str)).fillna("").str.lower().eq(teamlow)
+        )
+        res = res[mask]
+    if "gamesPlayed" in res.columns and min_gp > 0:
+        res = res[res["gamesPlayed"].fillna(0) >= min_gp]
+    return res
+
+# ---------- UI ----------
 st.title("EuroLeague Fantasy – Player Game Logs")
 
-# ==================== UI CONTROLS ====================
-colA, colB, colC, colD = st.columns([1,1,1,2])
-
-with colA:
-    season = st.text_input("Season", value=DEFAULT_SEASON)
-with colB:
+# Επιλογές header
+c1, c2, c3 = st.columns([1, 1, 1])
+with c1:
+    season = st.selectbox("Season", ["2025"], index=0)
+with c2:
     competition = st.selectbox("Competition", ["E", "U"], index=0)
-with colC:
-    stat_mode = st.selectbox("Mode", ["perGame"], index=0)
-with colD:
-    st.caption("Live στο cloud, με απλό password & on-demand ανανέωση δεδομένων")
+with c3:
+    mode = st.selectbox("Mode", ["perGame"], index=0)
 
-fpath = OUT_DIR / f"player_gamelogs_{season}_{stat_mode}.csv"
+players_path = make_players_path(season, mode)
+gamelogs_path = make_gamelogs_path(season, mode)
 
-# ---------- Update button (on-demand fetch) ----------
-with st.container():
-    colU1, colU2 = st.columns([1, 5])
-    with colU1:
-        do_update = st.button("🔄 Update (fetch gamelogs for ALL players)")
-    with colU2:
-        st.caption("Τρέχει το fetch script μόνο όταν το ζητήσεις. Αν παίρνει ώρα είναι φυσιολογικό — κατεβαίνουν gamelogs για όλους.")
+players_df_raw = load_csv(players_path)
+gamelogs_df_raw = load_csv(gamelogs_path)
 
-    if do_update:
-        cmd = [
-            sys.executable, "fetch_euroleague_stats.py",
-            "--kind", "gamelogs",
-            "--seasons", str(season),
-            "--competition", str(competition),
-            "--mode", str(stat_mode),
-            "--out", str(OUT_DIR),
-        ]
-        with st.spinner("Updating data… (fetching gamelogs from Incrowd feeds)"):
-            try:
-                out = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT)
-                st.success("✅ Update completed.")
-                st.code(out)
-            except subprocess.CalledProcessError as e:
-                st.error("❌ Update failed. Δες το log παρακάτω.")
-                st.code(e.output or str(e))
-
-st.write("---")
-
-# ==================== LOAD DATA ====================
-if not fpath.exists():
-    st.info(f"Δεν βρέθηκε αρχείο: **{fpath}**. Πάτησε **Update** για να το δημιουργήσεις/ανανεώσεις.")
-    st.stop()
-
-df = pd.read_csv(fpath)
-
-# ==================== COLUMN MAPPING HELPERS ====================
-def pick_col(_df: pd.DataFrame, options: List[str]) -> Optional[str]:
-    """Return the first existing column from options (case-insensitive)."""
-    if not len(_df.columns):
-        return None
-    colmap = {c.lower(): c for c in _df.columns}
-    for opt in options:
-        if opt in _df.columns:
-            return opt
-        lo = opt.lower()
-        if lo in colmap:
-            return colmap[lo]
-    return None
-
-# candidate maps for common stats/fields
-CAND = {
-    "player_name": ["player_displayName","player_shortName","player_fullName","player_name","player.displayName","player.shortName"],
-    "player_code": ["player_code","player.code","code"],
-    "game_date":   ["game_gameDate","game_date","gameDate","date"],
-    "opponent":    ["opponent_shortName","opposition_shortName","opponent","opposition","game_opponent_shortName"],
-    "home_away":   ["game_homeAway","homeAway","isHome","homeaway"],
-    "team_name":   ["team_shortName","team_name","team.shortName","team"],
-
-    "MIN": ["MIN","minutes","statistics_minutes"],
-    "PTS": ["PTS", "points", "statistics_points"],
-    "REB": ["REB","rebounds","statistics_reboundsTotal","statistics_rebounds"],
-    "AST": ["AST","assists","statistics_assists"],
-    "PIR": ["PIR","indexRating","efficiency","statistics_indexRating"],
-    "TOV": ["TOV","turnovers","statistics_turnovers"],
-    "FDR": ["FDR","foulsDrawn","statistics_foulsDrawn"],
-    "FGM": ["FGM","fieldGoalsMade","statistics_fieldGoalsMade"],
-    "FGA": ["FGA","fieldGoalsAttempted","statistics_fieldGoalsAttempted"],
-    "TPM": ["3PM","threePointersMade","statistics_threePointersMade"],
-    "TPA": ["3PA","threePointersAttempted","statistics_threePointersAttempted"],
-    "FTM": ["FTM","freeThrowsMade","statistics_freeThrowsMade"],
-    "FTA": ["FTA","freeThrowsAttempted","statistics_freeThrowsAttempted"],
-    "STL": ["STL","steals","statistics_steals"],
-    "BLK": ["BLK","blocks","statistics_blocks"],
-}
-
-COLS: Dict[str, Optional[str]] = {k: pick_col(df, v) for k, v in CAND.items()}
-
-# basic requirements
-need = ["player_code","game_date","MIN","PTS","REB","AST","PIR"]
-missing = [k for k in need if not COLS.get(k)]
-if missing:
-    st.error(f"Λείπουν βασικές στήλες: {missing}. Στείλε μου 1–2 γραμμές από το CSV για να ευθυγραμμίσουμε τα aliases.")
-    st.stop()
-
-# cast to proper types
-df[COLS["game_date"]] = pd.to_datetime(df[COLS["game_date"]], errors="coerce")
-for key in ["MIN","PTS","REB","AST","PIR","TOV","FDR","FGM","FGA","TPM","TPA","FTM","FTA","STL","BLK"]:
-    c = COLS.get(key)
-    if c and df[c].dtype == object:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-
-# ==================== NEW INDICES ====================
-eps = 1e-9
-MIN = df[COLS["MIN"]].clip(lower=0.01)
-
-# per-minute rates
-def safe_rate(colkey: str) -> pd.Series:
-    c = COLS.get(colkey)
-    if not c:
-        return pd.Series(np.nan, index=df.index)
-    return df[c] / MIN
-
-r_pts = safe_rate("PTS")
-r_reb = safe_rate("REB")
-r_ast = safe_rate("AST")
-r_pir = safe_rate("PIR")
-r_tov = safe_rate("TOV")
-r_fdr = safe_rate("FDR")
-
-def zscore(x: pd.Series) -> pd.Series:
-    m = np.nanmean(x)
-    s = np.nanstd(x) + eps
-    return np.clip((x - m)/s, -3, 3)
-
-z_MIN = zscore(MIN)
-z_pts, z_reb, z_ast, z_pir, z_tov, z_fdr = map(zscore, [r_pts, r_reb, r_ast, r_pir, r_tov, r_fdr])
-
-# Deep Impact Index (ανά παιχνίδι)
-raw_dii = (
-    0.25*z_pir + 0.22*z_pts + 0.20*z_reb + 0.20*z_ast + 0.10*z_fdr - 0.17*z_tov
-    + 0.08*z_MIN
+# Ενημερωτική μπάρα για τα αρχεία
+st.caption(
+    f"📄 Averages: `{players_path}` — "
+    f"{'OK' if players_df_raw is not None else 'ΔΕΝ ΒΡΕΘΗΚΕ'}  |  "
+    f"📄 Gamelogs: `{gamelogs_path}` — "
+    f"{'OK' if gamelogs_df_raw is not None else 'ΔΕΝ ΒΡΕΘΗΚΕ'}"
 )
 
-# Evenness bonus (να μην είναι μονοδιάστατο)
-pos = np.column_stack([
-    np.maximum(z_pts, 0),
-    np.maximum(z_reb, 0),
-    np.maximum(z_ast, 0),
-    np.maximum(z_fdr, 0),
-])
-shares = pos / (pos.sum(axis=1, keepdims=True) + eps)
-hhi = (shares**2).sum(axis=1)
-evenness = (1 - hhi) / (1 - 1/4)  # scale to [0,1]
-dii = raw_dii * (0.7 + 0.3*evenness)
+if players_df_raw is None:
+    st.error(f"Δεν βρέθηκε το αρχείο season averages: `{players_path}`. Τρέξε πρώτα το step για averages.")
+    st.stop()
 
-# Stability & Form per player (rolling windows)
-pcode = COLS["player_code"]
-gdate = COLS["game_date"]
-df = df.sort_values([pcode, gdate]).copy()
+# Κανονικοποίηση
+players_df, players_show_cols = normalize_players_df(players_df_raw)
+teams_list = ["(Όλες)"] + sorted(
+    pd.unique(
+        players_df.get("team_name", pd.Series(dtype=str)).dropna().astype(str).tolist()
+        + players_df.get("team_code", pd.Series(dtype=str)).dropna().astype(str).tolist()
+    ),
+    key=lambda x: x.lower()
+)
 
-pir = df[COLS["PIR"]]
-# rolling mean/std last 5 per player
-pir_mean5 = pir.groupby(df[pcode]).transform(lambda s: s.rolling(5, min_periods=1).mean())
-pir_std5  = pir.groupby(df[pcode]).transform(lambda s: s.rolling(5, min_periods=1).std())
-cv5 = pir_std5 / (pir_mean5 + eps)
-ss = (1 / (1 + cv5)) * 0.6 + pd.Series(evenness, index=df.index) * 0.4
+# Φίλτρα / αναζήτηση
+f1, f2, f3 = st.columns([2, 1, 1])
+with f1:
+    q = st.text_input("🔎 Live search (όνομα/κωδικός/ομάδα)", "")
+with f2:
+    team_sel = st.selectbox("Ομάδα", teams_list, index=0)
+with f3:
+    min_gp = st.number_input("Min GP", min_value=0, max_value=50, value=0, step=1)
 
-# Form Momentum: avg last 3 − avg previous 3
-pir_mean3 = pir.groupby(df[pcode]).transform(lambda s: s.rolling(3, min_periods=1).mean())
-pir_prev3 = pir.shift(3).groupby(df[pcode]).transform(lambda s: s.rolling(3, min_periods=1).mean())
-fm = (pir_mean3 - pir_prev3)
+filtered_players = filter_players(players_df, q, team_sel, min_gp)
 
-df["DII"] = pd.Series(dii, index=df.index).round(3)
-df["SS"]  = ss.round(3)
-df["FM"]  = fm.round(3)
+st.subheader("Season Averages (πίνακας παικτών)")
+st.dataframe(
+    filtered_players[players_show_cols].reset_index(drop=True),
+    use_container_width=True,
+    hide_index=True,
+)
 
-# ==================== LIVE SEARCH + FILTERS ====================
-name_col = COLS["player_name"] or pcode
-st.text_input("🔎 Live search (player name/code)", value="", key="player_search")
-query = st.session_state.get("player_search","").strip().lower()
-fdf = df
-if query:
-    fdf = fdf[fdf[name_col].astype(str).str.lower().str.contains(query) | fdf[pcode].astype(str).str.lower().str.contains(query)]
+# Επιλογή παίκτη (από τα φιλτραρισμένα αποτελέσματα)
+left, right = st.columns([1, 2])
+with left:
+    st.markdown("### Επιλογή παίκτη")
+    # Επιλογή με βάση όνομα αλλά κρατάμε και τον code
+    options = (
+        filtered_players[["player_name", "player_code"]]
+        .dropna(subset=["player_name"])
+        .drop_duplicates()
+        .sort_values("player_name")
+        .assign(label=lambda d: d["player_name"] + "  (" + d["player_code"].astype(str) + ")")
+    )
+    if len(options) == 0:
+        selected_label = None
+        st.info("Κανένα αποτέλεσμα με τα τρέχοντα φίλτρα.")
+    else:
+        selected_label = st.selectbox(
+            "Διάλεξε παίκτη",
+            options["label"].tolist(),
+            index=0,
+            key="player_select",
+        )
+        # εξαγωγή code από το label
+        if selected_label:
+            sel_row = options[options["label"] == selected_label].iloc[0]
+            selected_player_code = str(sel_row["player_code"])
+        else:
+            selected_player_code = None
 
-# ==================== CLEAN TABLE (only relevant stats) ====================
-wanted = [
-    name_col, pcode, COLS["team_name"], gdate, COLS["home_away"], COLS["opponent"],
-    COLS["MIN"], COLS["PTS"], COLS["REB"], COLS["AST"], COLS["PIR"], COLS["FDR"], COLS["TOV"],
-    COLS["FGM"], COLS["FGA"], COLS["TPM"], COLS["TPA"], COLS["FTM"], COLS["FTA"], COLS["STL"], COLS["BLK"],
-    "DII","SS","FM"
-]
-show_cols = [c for c in wanted if c and c in fdf.columns]
-view = fdf[show_cols].copy()
+with right:
+    st.markdown("### Αναλυτικά (Game-by-Game)")
+    if gamelogs_df_raw is None:
+        st.warning(
+            f"Δεν υπάρχει ακόμη αρχείο gamelogs για να εμφανιστούν αναλυτικά.\n\n"
+            f"Περίμενε/τρέξε το update ώστε να δημιουργηθεί: `{gamelogs_path}`."
+        )
+    else:
+        gamelogs_df = normalize_gamelogs_df(gamelogs_df_raw.copy())
+        # Προσπάθησε να φιλτράρεις με βάση player_code — αν λείπει, fall back σε όνομα
+        player_gl = pd.DataFrame()
+        if selected_label:
+            if "player_code" in gamelogs_df.columns:
+                player_gl = gamelogs_df[gamelogs_df["player_code"].astype(str) == selected_player_code]
+            if player_gl.empty and "player_name" in gamelogs_df.columns:
+                # πάρε το όνομα από τα players
+                p_name = sel_row["player_name"]
+                player_gl = gamelogs_df[gamelogs_df["player_name"].astype(str).str.lower() == str(p_name).lower()]
 
-# pretty headers
-pretty = {
-    name_col: "Player", pcode: "Code", COLS["team_name"]: "Team",
-    gdate: "Date", COLS["home_away"]: "H/A", COLS["opponent"]: "Opp",
-    COLS["MIN"]: "MIN", COLS["PTS"]: "PTS", COLS["REB"]: "REB", COLS["AST"]: "AST",
-    COLS["PIR"]: "PIR", COLS["FDR"]: "FDR", COLS["TOV"]: "TOV",
-    COLS["FGM"]: "FGM", COLS["FGA"]: "FGA", COLS["TPM"]: "3PM", COLS["TPA"]: "3PA",
-    COLS["FTM"]: "FTM", COLS["FTA"]: "FTA", COLS["STL"]: "STL", COLS["BLK"]: "BLK",
-    "DII": "Deep Impact", "SS": "Stability", "FM": "Form Δ(3vs3)"
-}
-view = view.rename(columns={k:v for k,v in pretty.items() if k in view.columns})
+        if selected_label and not player_gl.empty:
+            # Μικρή σύνοψη
+            csum1, csum2, csum3 = st.columns(3)
+            with csum1:
+                st.metric("Games", len(player_gl))
+            with csum2:
+                st.metric("PTS (avg)", round(player_gl.get("PTS", pd.Series([0])).mean(), 2))
+            with csum3:
+                st.metric("PIR (avg)", round(player_gl.get("PIR", pd.Series([0])).mean(), 2))
 
-# ==================== SORTING ====================
-sortable = ["PIR","PTS","REB","AST","MIN","FDR","TOV","DII","SS","FM","3PM","STL","BLK"]
-# keep only those present
-present = [lbl for lbl in sortable if (lbl in view.columns)]
-sort_label = st.selectbox("Ταξινόμηση", present, index=present.index("PIR") if "PIR" in present else 0)
-view = view.sort_values(by=sort_label, ascending=False)
+            # Γραφήματα
+            chart_cols = []
+            if "game_date" in player_gl.columns and "PTS" in player_gl.columns:
+                chart_cols.append(("PTS", "Πόντοι"))
+            if "game_date" in player_gl.columns and "PIR" in player_gl.columns:
+                chart_cols.append(("PIR", "PIR"))
+            if chart_cols:
+                st.caption("📈 Εξέλιξη στα τελευταία παιχνίδια")
+                for c, label in chart_cols:
+                    sub = player_gl[["game_date", c]].dropna().sort_values("game_date")
+                    sub = sub.set_index("game_date")
+                    st.line_chart(sub, height=180, use_container_width=True)
 
-# ==================== SHOW TABLE ====================
-st.dataframe(view, use_container_width=True)
-st.caption("DII: «βαθιά» επίδραση ανά λεπτό • SS: σταθερότητα (τελευταία 5) • FM: μομέντουμ φόρμας (3 vs προηγ. 3).")
+            # Πίνακας αγώνα-αγώνα
+            show_cols = []
+            for c in ["game_date", "team_code", "opponent", "W", "L", "MIN", "PTS", "REB", "AST", "STL", "TOV", "BLK", "FLS_CM", "FLS_RV", "PIR"]:
+                if c in player_gl.columns:
+                    show_cols.append(c)
+            extra = []
+            for c in ["2FG", "3FG", "FT", "2FG_M", "2FG_A", "3FG_M", "3FG_A", "FT_M", "FT_A"]:
+                if c in player_gl.columns: extra.append(c)
+            show_cols = [*show_cols, *extra]
+
+            st.dataframe(
+                player_gl[show_cols].reset_index(drop=True),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            if selected_label:
+                st.info("Δεν βρέθηκαν gamelogs για τον συγκεκριμένο παίκτη (ή το αρχείο είναι κενό).")
+
+# Υπόμνημα/βοήθεια
+st.divider()
+st.caption(
+    "💡 Η σελίδα φορτώνει **Season Averages** από `players_<SEASON>_<MODE>.csv`. "
+    "Για τα **Game Logs**, αν υπάρχει το `player_gamelogs_<SEASON>_<MODE>.csv`, "
+    "εμφανίζονται αναλυτικά ανά παίκτη με βάση την επιλογή σου."
+)
