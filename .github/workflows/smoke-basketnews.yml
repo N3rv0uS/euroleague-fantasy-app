@@ -16,34 +16,47 @@ on:
         required: true
         default: "perGame"
       player_code:
-        description: "Tag (προαιρετικό)"
+        description: "Tag (προαιρετικό) για να μπει στο CSV"
         required: false
         default: ""
       json_url:
-        description: "BN JSON endpoint (αν υπάρχει)"
+        description: "BasketNews JSON endpoint (αν υπάρχει). Αλλιώς άσε κενό."
         required: false
         default: ""
       page_url:
-        description: "BN player page URL (HTML fallback)"
+        description: "BasketNews player page URL (HTML fallback αν δεν έχεις JSON)"
         required: false
         default: "https://basketnews.com/players/19540-will-clyburn/statistics/leagues/25-euroleague/2025.html"
       out_dir:
-        description: "Output folder"
+        description: "Φάκελος εξαγωγής"
         required: true
         default: "out"
+
+permissions:
+  contents: write   # για το commit & push
 
 jobs:
   probe:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install pandas requests lxml html5lib
-      - name: BN probe
+
+      - name: BN probe (single player)
         run: |
           python bn_probe.py \
             --season "${{ github.event.inputs.season }}" \
@@ -53,5 +66,27 @@ jobs:
             --json_url "${{ github.event.inputs.json_url }}" \
             --page_url "${{ github.event.inputs.page_url }}" \
             --out "${{ github.event.inputs.out_dir }}"
+
       - name: List outputs
-        run: ls -lah "${{ github.event.inputs.out_dir }}" || true
+        run: |
+          ls -lah "${{ github.event.inputs.out_dir }}" || true
+
+      - name: Commit & push outputs
+        run: |
+          set -e
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase
+          # Προσπάθησε να προσθέσεις το gamelogs CSV αυτής της σεζόν/mode
+          git add "${{ github.event.inputs.out_dir }}/player_gamelogs_${{ github.event.inputs.season }}_${{ github.event.inputs.mode }}.csv" 2>/dev/null || true
+          # (προαιρετικά) αν δημιουργήθηκε/ενημερώθηκε και το players CSV, πρόσθεσέ το
+          git add "${{ github.event.inputs.out_dir }}/players_${{ github.event.inputs.season }}_${{ github.event.inputs.mode }}.csv" 2>/dev/null || true
+          git commit -m "data: BN gamelogs ${{ github.event.inputs.season }} (${{ github.event.inputs.mode }}) [run #${{ github.run_number }}]" || echo "No changes to commit"
+          git push
+
+      # Αν προτιμάς artifact αντί για commit, ξεσχόλιασε τα παρακάτω:
+      # - name: Upload artifact (gamelogs CSV)
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: player-gamelogs-${{ github.event.inputs.season }}-${{ github.event.inputs.mode }}
+      #     path: ${{ github.event.inputs.out_dir }}/player_gamelogs_${{ github.event.inputs.season }}_${{ github.event.inputs.mode }}.csv
