@@ -3,60 +3,37 @@ name: Smoke BasketNews (player gamelogs)
 on:
   workflow_dispatch:
     inputs:
-      season:
-        description: "Season"
-        required: true
-        default: "2025"
-      competition:
-        description: "E or U"
-        required: true
-        default: "E"
-      mode:
-        description: "perGame"
-        required: true
-        default: "perGame"
-      player_code:
-        description: "Tag (προαιρετικό) για να μπει στο CSV"
-        required: false
-        default: ""
-      json_url:
-        description: "BasketNews JSON endpoint (αν υπάρχει). Αλλιώς άσε κενό."
-        required: false
-        default: ""
+      season:      { description: "Season", required: true, default: "2025" }
+      competition: { description: "E or U", required: true, default: "E" }
+      mode:        { description: "perGame", required: true, default: "perGame" }
+      player_code: { description: "Tag (optional) για το CSV", required: false, default: "" }
+      json_url:    { description: "BasketNews JSON endpoint (αν υπάρχει). Αλλιώς άστο κενό.", required: false, default: "" }
       page_url:
-        description: "BasketNews player page URL (HTML fallback αν δεν έχεις JSON)"
+        description: "BasketNews player page URL (HTML fallback)"
         required: false
         default: "https://basketnews.com/players/19540-will-clyburn/statistics/leagues/25-euroleague/2025.html"
-      out_dir:
-        description: "Φάκελος εξαγωγής"
-        required: true
-        default: "out"
+      out_dir:     { description: "Φάκελος εξαγωγής", required: true, default: "out" }
 
 permissions:
-  contents: write   # για το push
+  contents: write
 
 jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install pandas requests lxml html5lib
 
-      - name: BN probe (single player)
+      - name: BN probe (single)
         run: |
           python bn_probe.py \
             --season "${{ github.event.inputs.season }}" \
@@ -68,8 +45,7 @@ jobs:
             --out "${{ github.event.inputs.out_dir }}"
 
       - name: List outputs
-        run: |
-          ls -lah "${{ github.event.inputs.out_dir }}" || true
+        run: ls -lah "${{ github.event.inputs.out_dir }}" || true
 
       - name: Commit & push outputs
         run: |
@@ -78,21 +54,12 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # 1) Στάδιο/commit Ο,ΤΙ άλλαξε (π.χ. νέο CSV)
+          # stage/commit ό,τι αλλάζει (CSV)
           git add "${{ github.event.inputs.out_dir }}/player_gamelogs_${{ github.event.inputs.season }}_${{ github.event.inputs.mode }}.csv" 2>/dev/null || true
           git add "${{ github.event.inputs.out_dir }}/players_${{ github.event.inputs.season }}_${{ github.event.inputs.mode }}.csv" 2>/dev/null || true
-          git add -N . >/dev/null 2>&1 || true   # δείξε untracked για pull --rebase με autostash
+          git add -N . >/dev/null 2>&1 || true
           git commit -m "data: BN gamelogs ${{ github.event.inputs.season }} (${{ github.event.inputs.mode }}) [run #${{ github.run_number }}]" || echo "No changes to commit"
 
-          # 2) Τράβα upstream με autostash για τυχόν υπόλοιπες αλλαγές
+          # pull με autostash & push
           git -c rebase.autoStash=true pull --rebase
-
-          # 3) Push
           git push
-
-      # Αν προτιμάς artifact αντί για commit, ξεσχόλιασε τα παρακάτω:
-      # - name: Upload artifact (gamelogs CSV)
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: player-gamelogs-${{ github.event.inputs.season }}-${{ github.event.inputs.mode }}
-      #     path: ${{ github.event.inputs.out_dir }}/player_gamelogs_${{ github.event.inputs.season }}_${{ github.event.inputs.mode }}.csv
