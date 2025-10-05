@@ -25,6 +25,29 @@ def load_csv(path: Path) -> Optional[pd.DataFrame]:
         except Exception:
             continue
     return None
+    
+def universal_score_raw(df: pd.DataFrame) -> pd.Series:
+    avail = (df.get("Min", 0).fillna(0) / 30.0).clip(0.6, 1.2)
+
+    def _minmax(s):
+        s = s.replace([np.inf, -np.inf], np.nan)
+        if s.max(skipna=True) == s.min(skipna=True):
+            return pd.Series(0.5, index=s.index)
+        return (s - s.min(skipna=True)) / (s.max(skipna=True) - s.min(skipna=True))
+
+    ts       = df.get("TS%", 0).clip(0, 1)
+    usage    = _minmax(df.get("Usage/min", 0))
+    trm      = _minmax(df.get("TR/min", 0))
+    astm     = _minmax(df.get("AST/min", 0))
+    fdm      = _minmax(df.get("FD/min", 0))
+    stocksm  = _minmax(df.get("Stocks/min", 0))
+    tom_good = 1 - _minmax(df.get("TO/min", 0))
+
+    raw = (
+        0.20*usage + 0.18*ts + 0.18*trm + 0.16*astm +
+        0.12*fdm   + 0.10*stocksm + 0.06*tom_good
+    )
+    return raw * avail
 
 def universal_score(df: pd.DataFrame) -> pd.Series:
     # Availability (όσο κοντά στα 30' τόσο καλύτερα)
@@ -491,6 +514,11 @@ players_df_feat["BCI"] = compute_bci(players_df_feat)
 
 adv_sf = compute_stability_form3(players_df_feat, gamelogs_df)
 players_df = players_df_feat.join(adv_sf)
+
+players_df["All_Score_raw"] = universal_score_raw(players_df)
+max_all = players_df["All_Score_raw"].max()
+players_df["All_Score"] = (players_df["All_Score_raw"] / max_all * 100).round(1)
+
 # --- ΝΕΟ: All_Score ως global advanced στήλη ---
 players_df["All_Score"] = universal_score(players_df)
 
@@ -662,11 +690,9 @@ with tabs[2]:
 # --- TAB 4: Top 30 ανεξάρτητα θέσης ---
 with tabs[3]:
     st.markdown("### 🔥 Top 30 (All positions)")
-    top_all = filtered_players.copy()
-    top_all["All_Score"] = universal_score(top_all)
-
-    # ταξινόμηση & επιλογή στηλών προβολής
+    top_all = filtered_players.copy()  # ΔΕΝ ξαναϋπολογίζουμε All_Score εδώ
     top_all = top_all.sort_values("All_Score", ascending=False, na_position="last").head(30)
+
     show_cols = [
         "Player", "Team", "Min", "PIR",
         "TS%", "eFG%", "FTR",
@@ -675,3 +701,4 @@ with tabs[3]:
     ]
     show_cols = [c for c in show_cols if c in top_all.columns]
     st.dataframe(top_all[show_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+
