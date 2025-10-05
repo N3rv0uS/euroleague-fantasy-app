@@ -1,0 +1,57 @@
+name: Smoke BasketNews (player gamelogs)
+
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season"
+        required: true
+        default: "2025"
+      competition:
+        description: "E or U"
+        required: true
+        default: "E"
+      mode:
+        description: "perGame"
+        required: true
+        default: "perGame"
+      player_code:
+        description: "Tag (προαιρετικό)"
+        required: false
+        default: ""
+      json_url:
+        description: "BN JSON endpoint (αν υπάρχει)"
+        required: false
+        default: ""
+      page_url:
+        description: "BN player page URL (HTML fallback)"
+        required: false
+        default: "https://basketnews.com/players/19540-will-clyburn/statistics/leagues/25-euroleague/2025.html"
+      out_dir:
+        description: "Output folder"
+        required: true
+        default: "out"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests lxml html5lib
+      - name: BN probe
+        run: |
+          python bn_probe.py \
+            --season "${{ github.event.inputs.season }}" \
+            --competition "${{ github.event.inputs.competition }}" \
+            --mode "${{ github.event.inputs.mode }}" \
+            --player_code "${{ github.event.inputs.player_code }}" \
+            --json_url "${{ github.event.inputs.json_url }}" \
+            --page_url "${{ github.event.inputs.page_url }}" \
+            --out "${{ github.event.inputs.out_dir }}"
+      - name: List outputs
+        run: ls -lah "${{ github.event.inputs.out_dir }}" || true
