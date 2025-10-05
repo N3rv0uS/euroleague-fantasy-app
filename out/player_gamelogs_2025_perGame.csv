@@ -1,1 +1,6 @@
-season,competition,mode
+season,competition,mode,game_no,Team,Team.1,W,L,MIN,PTS,2FG,3FG,FT,O,D,T,AST,STL,TOV,BLK_FV,BLK_AG,FLS_CM,FLS_RV,PIR
+2025,E,perGame,1.0,1.0,Hapoel Shlomo Tel Aviv,2.0,0.0,,,,,,,,,,,,,,,,
+2025,E,perGame,2.0,2.0,Valencia Basket,2.0,0.0,,,,,,,,,,,,,,,,
+2025,E,perGame,3.0,3.0,Zalgiris Kaunas,2.0,0.0,,,,,,,,,,,,,,,,
+2025,E,perGame,4.0,4.0,AS Monaco,1.0,1.0,,,,,,,,,,,,,,,,
+2025,E,perGame,5.0,5.0,Fenerbahce Beko Istanbul,1.0,1.0,,,,,,,,,,,,,,,,
