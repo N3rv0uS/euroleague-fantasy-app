@@ -491,6 +491,9 @@ players_df_feat["BCI"] = compute_bci(players_df_feat)
 
 adv_sf = compute_stability_form3(players_df_feat, gamelogs_df)
 players_df = players_df_feat.join(adv_sf)
+# --- ΝΕΟ: All_Score ως global advanced στήλη ---
+players_df["All_Score"] = universal_score(players_df)
+
 
 # Εξασφάλισε να υπάρχουν πάντα στήλες Stability/Form3
 for _col in ["Stability", "Form3"]:
@@ -524,11 +527,14 @@ def filter_players(df: pd.DataFrame, q: str, team: str, min_gp: int) -> pd.DataF
 
 filtered_players = filter_players(players_df, q, team_sel, min_gp)
 
-# Στήλες για Season Averages (ζητούμενες + advanced)
 final_cols = []
 for c in target_cols:
     if c in filtered_players.columns:
         final_cols.append(c)
+# πρόσθεσε All_Score αν δεν υπάρχει ήδη
+if "All_Score" not in final_cols and "All_Score" in filtered_players.columns:
+    final_cols.append("All_Score")
+
 
 st.subheader("Season Averages (με τις ζητούμενες στήλες + Advanced)")
 st.dataframe(
@@ -607,11 +613,12 @@ with tabs[0]:
 with tabs[1]:
     st.markdown("### Advanced feature set (season-based)")
     feat_cols = [
-        "Player", "Team", "Position", "Min", "PIR", "BCI",
-        "TS%", "eFG%", "FTR",
-        "Usage/min", "PTS/min", "TR/min", "AST/min", "FD/min", "Stocks/min", "TO/min",
-        "Stability", "Form3"
+    "Player", "Team", "Position", "Min", "PIR", "BCI",
+    "TS%", "eFG%", "FTR",
+    "Usage/min", "PTS/min", "TR/min", "AST/min", "FD/min", "Stocks/min", "TO/min",
+    "Stability", "Form3", "All_Score"   # <--- πρόσθεσε εδώ
     ]
+
     feat_cols = [c for c in feat_cols if c in filtered_players.columns]
     st.dataframe(filtered_players[feat_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
 
