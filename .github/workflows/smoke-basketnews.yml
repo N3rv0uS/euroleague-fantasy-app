@@ -33,7 +33,7 @@ on:
         default: "out"
 
 permissions:
-  contents: write   # για το commit & push
+  contents: write   # για το push
 
 jobs:
   probe:
@@ -74,14 +74,20 @@ jobs:
       - name: Commit & push outputs
         run: |
           set -e
+          git config --global safe.directory "$GITHUB_WORKSPACE"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase
-          # Προσπάθησε να προσθέσεις το gamelogs CSV αυτής της σεζόν/mode
+
+          # 1) Στάδιο/commit Ο,ΤΙ άλλαξε (π.χ. νέο CSV)
           git add "${{ github.event.inputs.out_dir }}/player_gamelogs_${{ github.event.inputs.season }}_${{ github.event.inputs.mode }}.csv" 2>/dev/null || true
-          # (προαιρετικά) αν δημιουργήθηκε/ενημερώθηκε και το players CSV, πρόσθεσέ το
           git add "${{ github.event.inputs.out_dir }}/players_${{ github.event.inputs.season }}_${{ github.event.inputs.mode }}.csv" 2>/dev/null || true
+          git add -N . >/dev/null 2>&1 || true   # δείξε untracked για pull --rebase με autostash
           git commit -m "data: BN gamelogs ${{ github.event.inputs.season }} (${{ github.event.inputs.mode }}) [run #${{ github.run_number }}]" || echo "No changes to commit"
+
+          # 2) Τράβα upstream με autostash για τυχόν υπόλοιπες αλλαγές
+          git -c rebase.autoStash=true pull --rebase
+
+          # 3) Push
           git push
 
       # Αν προτιμάς artifact αντί για commit, ξεσχόλιασε τα παρακάτω:
