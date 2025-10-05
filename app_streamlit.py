@@ -26,6 +26,33 @@ def load_csv(path: Path) -> Optional[pd.DataFrame]:
             continue
     return None
 
+def universal_score(df: pd.DataFrame) -> pd.Series:
+    # Availability (όσο κοντά στα 30' τόσο καλύτερα)
+    avail = (df.get("Min", 0).fillna(0) / 30.0).clip(0.6, 1.2)
+
+    # Normalize components (0..1)
+    def _minmax(s):
+        s = s.replace([np.inf, -np.inf], np.nan)
+        if s.max(skipna=True) == s.min(skipna=True):
+            return pd.Series(0.5, index=s.index)
+        return (s - s.min(skipna=True)) / (s.max(skipna=True) - s.min(skipna=True))
+
+    ts       = df.get("TS%", 0).clip(0, 1)               # 0..1
+    usage    = _minmax(df.get("Usage/min", 0))
+    trm      = _minmax(df.get("TR/min", 0))
+    astm     = _minmax(df.get("AST/min", 0))
+    fdm      = _minmax(df.get("FD/min", 0))
+    stocksm  = _minmax(df.get("Stocks/min", 0))
+    tom_good = 1 - _minmax(df.get("TO/min", 0))          # λιγότερα λάθη = καλύτερα
+
+    # Ισορροπημένα βάρη για “ποιος θα γράψει PIR”
+    raw = (
+        0.20*usage + 0.18*ts + 0.18*trm + 0.16*astm +
+        0.12*fdm   + 0.10*stocksm + 0.06*tom_good
+    )
+
+    score = raw * avail
+    return (100 * score / score.max()).round(1) if score.max() > 0 else score
 
 def make_players_path(season: str, mode: str) -> Path:
     return OUT_DIR / f"players_{season}_{mode}.csv"
@@ -511,7 +538,13 @@ st.dataframe(
 )
 
 # ----------------- ANALYTICS TABS -----------------
-tabs = st.tabs(["📈 Player details (gamelogs)", "🧮 Advanced features", "🏆 Προτεινόμενα Picks (G/F/C)"])
+tabs = st.tabs([
+    "📈 Player details (gamelogs)",
+    "🧮 Advanced features",
+    "🏆 Προτεινόμενα Picks (G/F/C)",
+    "🔥 Top 30 (All)"
+])
+
 
 # --- TAB 1: Player details ---
 with tabs[0]:
@@ -618,3 +651,20 @@ with tabs[2]:
                 st.dataframe(pos_tables["G"], use_container_width=True, hide_index=True)
     else:
         st.warning("Δεν υπάρχουν διαθέσιμες θέσεις (Position). Πρόσθεσε mapping για να δεις προτάσεις G/F/C.")
+        
+# --- TAB 4: Top 30 ανεξάρτητα θέσης ---
+with tabs[3]:
+    st.markdown("### 🔥 Top 30 (All positions)")
+    top_all = filtered_players.copy()
+    top_all["All_Score"] = universal_score(top_all)
+
+    # ταξινόμηση & επιλογή στηλών προβολής
+    top_all = top_all.sort_values("All_Score", ascending=False, na_position="last").head(30)
+    show_cols = [
+        "Player", "Team", "Min", "PIR",
+        "TS%", "eFG%", "FTR",
+        "Usage/min", "PTS/min", "TR/min", "AST/min", "FD/min", "Stocks/min", "TO/min",
+        "BCI", "Stability", "Form3", "All_Score"
+    ]
+    show_cols = [c for c in show_cols if c in top_all.columns]
+    st.dataframe(top_all[show_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
