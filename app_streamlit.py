@@ -734,14 +734,19 @@ if "Player" in table_df.columns and "player_code" in table_df.columns:
 # 3) ποια columns θα δείξουμε (με βάση final_cols)
 display_cols = [c for c in final_cols if c in table_df.columns]
 
-# Κουμπί ΚΑΤΩ από τον πίνακα
-if not is_all:
-    if st.button("Show more", key="more"):
-        st.session_state["show_all"] = True
-        st.rerun()
-else:
+# 4) Show more / Show less
+if "show_all" not in st.session_state:
+    st.session_state["show_all"] = False
+
+if st.session_state["show_all"]:
+    display_df = table_df[display_cols].reset_index(drop=True)
     if st.button("Show less", key="less"):
         st.session_state["show_all"] = False
+        st.rerun()
+else:
+    display_df = table_df[display_cols].head(30).reset_index(drop=True)
+    if st.button("Show more", key="more"):
+        st.session_state["show_all"] = True
         st.rerun()
 
 # 5) render με μικρότερο font
