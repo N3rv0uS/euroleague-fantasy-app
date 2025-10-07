@@ -680,7 +680,7 @@ if "Player" in table_df.columns and "player_code" in table_df.columns:
     ]
 
 # 3) ποια columns θα δείξουμε (με βάση feat_cols)
-display_cols = [c for c in feat_cols if c in table_df.columns]
+display_cols = [c for c in final_cols if c in table_df.columns]
 
 # 4) Show more / Show less
 if "show_all" not in st.session_state:
