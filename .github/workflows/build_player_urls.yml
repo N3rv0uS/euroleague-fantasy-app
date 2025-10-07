@@ -1,0 +1,53 @@
+name: build-player-urls
+
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season code (π.χ. E2025 ή U2025)"
+        required: true
+        default: "E2025"
+      competition:
+        description: "Competition (E=EuroLeague, U=EuroCup)"
+        required: true
+        default: "E"
+      lang:
+        description: "Language (el ή en)"
+        required: true
+        default: "el"
+
+jobs:
+  build-urls:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # χρειάζεται για commit στο repo
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests pandas
+
+      - name: Run build_player_urls
+        run: |
+          python scripts/build_player_urls.py \
+            --season "${{ github.event.inputs.season }}" \
+            --competition "${{ github.event.inputs.competition }}" \
+            --lang "${{ github.event.inputs.lang }}"
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add out/player_urls_${{ github.event.inputs.season }}.csv || true
+          git diff --cached --quiet && echo "No changes" || git commit -m "Update player_urls for ${{ github.event.inputs.season }} [skip ci]"
+
+      - name: Push changes
+        if: success()
+        run: git push
