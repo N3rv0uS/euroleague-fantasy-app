@@ -2,7 +2,6 @@
 import os
 from pathlib import Path
 from typing import Optional, Dict, Tuple
-
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -20,6 +19,25 @@ df = df_avg.merge(df_urls[["player_code","player_url"]], on="player_code", how="
 qp = st.query_params
 player_code = qp.get("player_code")
 @st.cache_data(ttl=3600)
+# df: το merged dataframe με columns: player_code, player_name, ...
+def _plink(code, name):
+    qs = urlencode({"player_code": str(code)})
+    # target=_blank για νέο tab (βγάλε το αν δεν το θες)
+    return f'<a href="?{qs}" target="_blank" style="text-decoration:none;">{name}</a>'
+
+show = df.copy()
+# Αν το δικό σου column είναι "Player" άλλαξέ το ανάλογα
+show["player_name"] = [
+    _plink(code, name) for code, name in zip(show["player_code"], show["player_name"])
+]
+
+cols = ["player_name","player_team_name","gamesPlayed","minutesPlayed","pir"]
+cols = [c for c in cols if c in show.columns]
+
+st.markdown(
+    show[cols].rename(columns={"player_name":"Player"}).to_html(index=False, escape=False),
+    unsafe_allow_html=True,
+)
 def scrape_gamelog_table(player_url: str) -> pd.DataFrame:
     import requests
     html = requests.get(player_url, headers={"User-Agent":"eurol-app/1.0"}).text
