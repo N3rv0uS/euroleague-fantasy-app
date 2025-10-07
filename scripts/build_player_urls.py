@@ -84,7 +84,13 @@ def main():
 
     # Πιο πλούσιες λίστες ονομάτων στηλών
     code_opts = ["player_code","playerId","PlayerId","PLAYERID","id","ID","Code","code","Player Code","PlayerCode"]
-    name_opts = ["Player","player","name","Name","FullName","FULLNAME","full_name","Full Name"]
+    
+    name_opts = [
+    "Player","player","name","Name",
+    "FullName","FULLNAME","full_name","Full Name",
+    "player_name"   # <-- πρόσθεσέ το εδώ
+    ]
+
 
     code_col = choose_col(df, code_opts)
     name_col = choose_col(df, name_opts)
