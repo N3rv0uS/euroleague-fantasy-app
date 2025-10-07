@@ -636,11 +636,33 @@ if "Player" in table_df.columns and "player_code" in table_df.columns:
     table_df["Player"] = [
         _plink_player(code, name) for code, name in zip(table_df["player_code"], table_df["Player"])
     ]
+# state για show more/less
+if "show_all" not in st.session_state:
+    st.session_state["show_all"] = False
 
+# φτιάξε το df που θα εμφανιστεί
+display_df = _table[feat_cols].reset_index(drop=True)
+
+if not st.session_state["show_all"]:
+    display_df = display_df.head(30)
+    if st.button("Show more", key="show_more"):
+        st.session_state["show_all"] = True
+        st.rerun()
+else:
+    if st.button("Show less", key="show_less"):
+        st.session_state["show_all"] = False
+        st.rerun()
+
+# render (μικρό font μέσω .small-table)
 st.markdown(
-    table_df[final_cols].reset_index(drop=True).to_html(index=False, escape=False),
+    f"<div class='small-table'>{display_df.to_html(index=False, escape=False)}</div>",
     unsafe_allow_html=True,
 )
+
+#st.markdown(
+   #table_df[final_cols].reset_index(drop=True).to_html(index=False, escape=False),
+    #unsafe_allow_html=True,
+#)
 # ========= ΤΕΛΟΣ ΑΛΛΑΓΗΣ =========
 
 
