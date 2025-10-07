@@ -657,43 +657,52 @@ if "PredictScore" in filtered_players.columns and "PredictScore" not in final_co
 st.subheader("Season Averages (με τις ζητούμενες στήλες + Advanced)")
 
 # ========= ΜΟΝΗ ΑΛΛΑΓΗ: κάνουμε τη στήλη Player clickable & render ως HTML =========
-def _plink_player(code, name):
-    qs = urlencode({"player_code": str(code)})
-    return f'<a href="?{qs}" style="text-decoration:none;">{name}</a>'
-
-table_df = filtered_players.copy()
-if "Player" in table_df.columns and "player_code" in table_df.columns:
-    table_df["Player"] = [
-        _plink_player(code, name) for code, name in zip(table_df["player_code"], table_df["Player"])
-    ]
-# state για show more/less
-if "show_all" not in st.session_state:
-    st.session_state["show_all"] = False
-
-# φτιάξε το df που θα εμφανιστεί
-display_df = _table[feat_cols].reset_index(drop=True)
-
-if not st.session_state["show_all"]:
-    display_df = display_df.head(30)
-    if st.button("Show more", key="show_more"):
-        st.session_state["show_all"] = True
-        st.rerun()
-else:
-    if st.button("Show less", key="show_less"):
-        st.session_state["show_all"] = False
-        st.rerun()
-
-# render (μικρό font μέσω .small-table)
-st.markdown(
-    f"<div class='small-table'>{display_df.to_html(index=False, escape=False)}</div>",
-    unsafe_allow_html=True,
-)
+# --- μικρό font για τον πίνακα ---
 st.markdown("""
 <style>
 .small-table table { font-size: 12px; }
 .small-table th, .small-table td { padding: 4px 8px; }
 </style>
 """, unsafe_allow_html=True)
+
+
+def _plink_player(code, name):
+    qs = urlencode({"player_code": str(code)})
+    return f'<a href="?{qs}" style="text-decoration:none;">{name}</a>'
+
+# 1) ξεκινάμε από το filtered_players που ήδη έχεις
+table_df = filtered_players.copy()
+
+# 2) κάνε τη στήλη Player clickable (θέλει και player_code)
+if "Player" in table_df.columns and "player_code" in table_df.columns:
+    table_df["Player"] = [
+        _plink_player(c, n) for c, n in zip(table_df["player_code"], table_df["Player"])
+    ]
+
+# 3) ποια columns θα δείξουμε (με βάση feat_cols)
+display_cols = [c for c in feat_cols if c in table_df.columns]
+
+# 4) Show more / Show less
+if "show_all" not in st.session_state:
+    st.session_state["show_all"] = False
+
+if st.session_state["show_all"]:
+    display_df = table_df[display_cols].reset_index(drop=True)
+    if st.button("Show less", key="less"):
+        st.session_state["show_all"] = False
+        st.rerun()
+else:
+    display_df = table_df[display_cols].head(30).reset_index(drop=True)
+    if st.button("Show more", key="more"):
+        st.session_state["show_all"] = True
+        st.rerun()
+
+# 5) render με μικρότερο font
+st.markdown(
+    f"<div class='small-table'>{display_df.to_html(index=False, escape=False)}</div>",
+    unsafe_allow_html=True,
+)
+
 
 #st.markdown(
    #table_df[final_cols].reset_index(drop=True).to_html(index=False, escape=False),
