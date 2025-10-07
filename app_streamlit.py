@@ -18,6 +18,36 @@ df = df_avg.merge(df_urls[["player_code","player_url"]], on="player_code", how="
 
 qp = st.query_params
 player_code = qp.get("player_code")
+player_code = st.query_params.get("player_code")
+
+if player_code:
+    # αν έχεις ήδη δική σου page_player(player_code), κάλεσέ την και σταμάτα:
+    try:
+        page_player(player_code)  # <-- η δική σου function αν υπάρχει
+        st.stop()
+    except NameError:
+        # αλλιώς, fallback: διάβασε out/player_urls_2025.csv και δείξε gamelog με read_html
+        import pandas as pd, re, requests
+        urls = pd.read_csv("out/player_urls_2025.csv")
+        row = urls[urls["player_code"].astype(str) == str(player_code)].head(1)
+        if row.empty or not str(row.iloc[0].get("player_url","")).strip():
+            st.error("Δεν βρέθηκε player_url για αυτόν τον παίκτη."); st.stop()
+        player_url = row.iloc[0]["player_url"]
+        player_name = row.iloc[0].get("Player", str(player_code))
+
+        st.title(f"{player_name} — Αναλυτικά (Game-by-Game)")
+        html = requests.get(player_url, headers={"User-Agent":"eurol-app/1.0"}, timeout=20).text
+        tables = pd.read_html(html)
+        def score(df):
+            cols = [re.sub(r"\\W+","",str(c).lower()) for c in df.columns]
+            keys = ["pir","min","λεπ","pts","πον","date","ημ","opponent","αντιπ"]
+            return sum(any(k in c for c in cols) for k in keys)
+        gl = max(tables, key=score)
+        st.dataframe(gl, use_container_width=True)
+        for c in ["Πόντοι","PTS","PIR","pir"]:
+            if c in gl.columns:
+                st.line_chart(gl[c])
+        st.stop()
 
 def scrape_gamelog_table(player_url: str) -> pd.DataFrame:
     import requests
@@ -658,6 +688,12 @@ st.markdown(
     f"<div class='small-table'>{display_df.to_html(index=False, escape=False)}</div>",
     unsafe_allow_html=True,
 )
+st.markdown("""
+<style>
+.small-table table { font-size: 12px; }
+.small-table th, .small-table td { padding: 4px 8px; }
+</style>
+""", unsafe_allow_html=True)
 
 #st.markdown(
    #table_df[final_cols].reset_index(drop=True).to_html(index=False, escape=False),
