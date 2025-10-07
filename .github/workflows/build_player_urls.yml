@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -28,14 +29,18 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          pip install requests pandas
+          pip install pandas requests
 
-      - name: Inspect players CSV
+      # Βρίσκουμε και ΕΞΑΓΟΥΜΕ το INFILE για να είναι διαθέσιμο στα επόμενα steps
+      - name: Resolve players CSV
+        id: resolve_csv
+        shell: bash
         run: |
+          set -euo pipefail
           SEASON="${{ github.event.inputs.season }}"
           C1="out/players_${SEASON}_perGame.csv"
           C2="out/players_${SEASON#E}_perGame.csv"
@@ -43,43 +48,44 @@ jobs:
           for p in "$C1" "$C2" "$C3"; do
             if [ -f "$p" ]; then INFILE="$p"; break; fi
           done
-          if [ -z "$INFILE" ]; then
-            echo "❌ Δεν βρέθηκε input CSV"
+          if [ -z "${INFILE:-}" ]; then
+            echo "❌ Δεν βρέθηκε input CSV. Περιεχόμενα του out/:"
             ls -la out || true
             exit 1
           fi
-          echo "✅ Βρέθηκε INFILE=$INFILE"
+          echo "✅ INFILE=$INFILE"
+          echo "infile=$INFILE" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect players CSV (columns preview)
+        env:
+          INFILE: ${{ steps.resolve_csv.outputs.infile }}
+        run: |
           python - <<'PY'
 import os, pandas as pd
-p=os.environ.get("INFILE")
+p=os.environ["INFILE"]
 df=pd.read_csv(p, nrows=3)
+print("Using CSV:", p)
 print("Columns:", list(df.columns))
 print(df.head(3).to_string(index=False))
 PY
 
       - name: Run build_player_urls
+        env:
+          INFILE: ${{ steps.resolve_csv.outputs.infile }}
         run: |
-          SEASON="${{ github.event.inputs.season }}"
-          C1="out/players_${SEASON}_perGame.csv"
-          C2="out/players_${SEASON#E}_perGame.csv"
-          C3="out/players_${SEASON#U}_perGame.csv"
-          for p in "$C1" "$C2" "$C3"; do
-            if [ -f "$p" ]; then INFILE="$p"; break; fi
-          done
-          echo "Χρησιμοποιώ INFILE=$INFILE"
           python scripts/build_player_urls.py \
-            --season "$SEASON" \
+            --season "${{ github.event.inputs.season }}" \
             --competition "${{ github.event.inputs.competition }}" \
             --lang "${{ github.event.inputs.lang }}" \
             --infile "$INFILE"
 
-      - name: Commit changes
+      - name: Commit changes (if any)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add out/player_urls_${{ github.event.inputs.season }}.csv || true
+          git add "out/player_urls_${{ github.event.inputs.season }}.csv" || true
           git diff --cached --quiet && echo "No changes" || git commit -m "Update player_urls for ${{ github.event.inputs.season }} [skip ci]"
 
-      - name: Push changes
+      - name: Push
         if: success()
         run: git push
