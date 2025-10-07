@@ -24,25 +24,7 @@ DEFAULT_HEADERS = {
 # -------- robust helpers for Incrowd variants --------
 # ----------------- CMS content gamelogs parser (no scraping) -----------------
 
-# df: το merged dataframe με columns: player_code, player_name, ...
-def _plink(code, name):
-    qs = urlencode({"player_code": str(code)})
-    # target=_blank για νέο tab (βγάλε το αν δεν το θες)
-    return f'<a href="?{qs}" target="_blank" style="text-decoration:none;">{name}</a>'
 
-show = df.copy()
-# Αν το δικό σου column είναι "Player" άλλαξέ το ανάλογα
-show["player_name"] = [
-    _plink(code, name) for code, name in zip(show["player_code"], show["player_name"])
-]
-
-cols = ["player_name","player_team_name","gamesPlayed","minutesPlayed","pir"]
-cols = [c for c in cols if c in show.columns]
-
-st.markdown(
-    show[cols].rename(columns={"player_name":"Player"}).to_html(index=False, escape=False),
-    unsafe_allow_html=True,
-)
 
 def _dig(d, path, default=None):
     cur = d
