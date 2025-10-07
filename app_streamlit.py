@@ -145,34 +145,67 @@ def compute_attempts_from_pct(made: pd.Series, pct: pd.Series) -> pd.Series:
 
 def add_feature_columns(players_df: pd.DataFrame) -> pd.DataFrame:
     df2 = players_df.copy()
+
+    # helper για ασφαλές get στήλης (επιστρέφει Series με 0 αν δεν υπάρχει)
+    def safe_get(col, df=df2):
+        return df[col] if col in df.columns else pd.Series(0, index=df.index)
+
     # attempts
     if "2PA" not in df2.columns and all(c in df2.columns for c in ["2PM", "2P%"]):
-        df2["2PA"] = compute_attempts_from_pct(df2["2PM"], df2["2P%"])
+        made = safe_get("2PM").astype(float).fillna(0)
+        pct = safe_get("2P%").astype(float).replace(0, np.nan)
+        df2["2PA"] = (made / (pct / 100.0)).round(1).fillna(0)
+
     if "3PA" not in df2.columns and all(c in df2.columns for c in ["3PM", "3P%"]):
-        df2["3PA"] = compute_attempts_from_pct(df2["3PM"], df2["3P%"])
+        made = safe_get("3PM").astype(float).fillna(0)
+        pct = safe_get("3P%").astype(float).replace(0, np.nan)
+        df2["3PA"] = (made / (pct / 100.0)).round(1).fillna(0)
+
     if "FTA" not in df2.columns and all(c in df2.columns for c in ["FTM", "FT%"]):
-        df2["FTA"] = compute_attempts_from_pct(df2["FTM"], df2["FT%"])
+        made = safe_get("FTM").astype(float).fillna(0)
+        pct = safe_get("FT%").astype(float).replace(0, np.nan)
+        df2["FTA"] = (made / (pct / 100.0)).round(1).fillna(0)
+
     # totals
-    df2["FGA"] = df2.get("2PA", 0).fillna(0) + df2.get("3PA", 0).fillna(0)
-    # eFG, TS, FTR
-    efg_num = df2.get("2PM", 0).fillna(0) + 1.5 * df2.get("3PM", 0).fillna(0)
+    df2["FGA"] = safe_get("2PA").fillna(0) + safe_get("3PA").fillna(0)
+
+    # eFG%
+    efg_num = safe_get("2PM").fillna(0) + 1.5 * safe_get("3PM").fillna(0)
     df2["eFG%"] = (efg_num / df2["FGA"].replace(0, np.nan)).fillna(0)
-    denom = 2 * (df2["FGA"] + 0.44 * df2.get("FTA", 0).fillna(0))
-    df2["TS%"] = (df2.get("PTS", 0).fillna(0) / denom.replace(0, np.nan)).fillna(0)
-    df2["FTR"] = (df2.get("FTA", 0).fillna(0) / df2["FGA"].replace(0, np.nan)).fillna(0)
-    # per-min
-    df2["PTS/min"] = per_min(df2.get("PTS", 0), df2.get("Min", 0))
-    df2["TR/min"]  = per_min(df2.get("TR", 0),  df2.get("Min", 0))
-    df2["AST/min"] = per_min(df2.get("AST", 0), df2.get("Min", 0))
-    df2["FD/min"]  = per_min(df2.get("FD", 0),  df2.get("Min", 0))
-    df2["TO/min"]  = per_min(df2.get("TO", 0),  df2.get("Min", 0))
-    df2["STL/min"] = per_min(df2.get("STL", 0), df2.get("Min", 0))
-    df2["BLK/min"] = per_min(df2.get("BLK", 0), df2.get("Min", 0))
+
+    # TS%
+    denom = 2 * (df2["FGA"] + 0.44 * safe_get("FTA").fillna(0))
+    df2["TS%"] = (safe_get("PTS").fillna(0) / denom.replace(0, np.nan)).fillna(0)
+
+    # FTR
+    df2["FTR"] = (safe_get("FTA").fillna(0) / df2["FGA"].replace(0, np.nan)).fillna(0)
+
+    # per-minute metrics
+    def per_min(x, minutes):
+        x = x.fillna(0)
+        m = minutes.replace(0, np.nan)
+        return (x / m).fillna(0)
+
+    df2["PTS/min"] = per_min(safe_get("PTS"), safe_get("Min"))
+    df2["TR/min"]  = per_min(safe_get("TR"),  safe_get("Min"))
+    df2["AST/min"] = per_min(safe_get("AST"), safe_get("Min"))
+    df2["FD/min"]  = per_min(safe_get("FD"),  safe_get("Min"))
+    df2["TO/min"]  = per_min(safe_get("TO"),  safe_get("Min"))
+    df2["STL/min"] = per_min(safe_get("STL"), safe_get("Min"))
+    df2["BLK/min"] = per_min(safe_get("BLK"), safe_get("Min"))
     df2["Stocks/min"] = df2["STL/min"] + df2["BLK/min"]
-    # usage
-    usage_numer = df2.get("2PA", 0).fillna(0) + df2.get("3PA", 0).fillna(0) + 0.44 * df2.get("FTA", 0).fillna(0) + df2.get("TO", 0).fillna(0)
-    df2["Usage/min"] = per_min(usage_numer, df2.get("Min", 0))
+
+    # usage/min
+    usage_numer = (
+        safe_get("2PA").fillna(0)
+        + safe_get("3PA").fillna(0)
+        + 0.44 * safe_get("FTA").fillna(0)
+        + safe_get("TO").fillna(0)
+    )
+    df2["Usage/min"] = per_min(usage_numer, safe_get("Min"))
+
     return df2
+
 
 def compute_bci(players_df: pd.DataFrame) -> pd.Series:
     PTS_pm = players_df["PTS/min"]
