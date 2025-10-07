@@ -20,7 +20,7 @@ jobs:
   build-urls:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # χρειάζεται για commit στο repo
+      contents: write
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -34,12 +34,44 @@ jobs:
         run: |
           pip install requests pandas
 
+      - name: Inspect players CSV
+        run: |
+          SEASON="${{ github.event.inputs.season }}"
+          C1="out/players_${SEASON}_perGame.csv"
+          C2="out/players_${SEASON#E}_perGame.csv"
+          C3="out/players_${SEASON#U}_perGame.csv"
+          for p in "$C1" "$C2" "$C3"; do
+            if [ -f "$p" ]; then INFILE="$p"; break; fi
+          done
+          if [ -z "$INFILE" ]; then
+            echo "❌ Δεν βρέθηκε input CSV"
+            ls -la out || true
+            exit 1
+          fi
+          echo "✅ Βρέθηκε INFILE=$INFILE"
+          python - <<'PY'
+import os, pandas as pd
+p=os.environ.get("INFILE")
+df=pd.read_csv(p, nrows=3)
+print("Columns:", list(df.columns))
+print(df.head(3).to_string(index=False))
+PY
+
       - name: Run build_player_urls
         run: |
+          SEASON="${{ github.event.inputs.season }}"
+          C1="out/players_${SEASON}_perGame.csv"
+          C2="out/players_${SEASON#E}_perGame.csv"
+          C3="out/players_${SEASON#U}_perGame.csv"
+          for p in "$C1" "$C2" "$C3"; do
+            if [ -f "$p" ]; then INFILE="$p"; break; fi
+          done
+          echo "Χρησιμοποιώ INFILE=$INFILE"
           python scripts/build_player_urls.py \
-            --season "${{ github.event.inputs.season }}" \
+            --season "$SEASON" \
             --competition "${{ github.event.inputs.competition }}" \
-            --lang "${{ github.event.inputs.lang }}"
+            --lang "${{ github.event.inputs.lang }}" \
+            --infile "$INFILE"
 
       - name: Commit changes
         run: |
