@@ -60,10 +60,13 @@ if player_code:
         st.stop()
 
 @st.cache_data(ttl=3600)
-def scrape_gamelog_table(player_url: str) -> pd.DataFrame | None:
-    import requests, re
+def scrape_gamelog_table(player_url: str):
+    import requests
     from bs4 import BeautifulSoup
-    import pandas as pd
+    import pandas as pd, re
+
+    if not player_url:
+        return None
 
     headers = {
         "User-Agent": "eurol-app/1.2 (+stats)",
@@ -71,69 +74,82 @@ def scrape_gamelog_table(player_url: str) -> pd.DataFrame | None:
         "Accept-Language": "el,en;q=0.8",
     }
 
-    def _pick_best_table(html: str) -> pd.DataFrame | None:
-        # 1) Δοκίμασε απευθείας read_html
+    # δοκίμασε EL/EN & με/χωρίς /
+    variants = []
+    u = player_url.strip()
+    variants.append(u)
+    if not u.endswith("/"):
+        variants.append(u + "/")
+    variants.append(u.rstrip("/"))
+    if "/el/" in u:
+        variants.append(u.replace("/el/", "/en/"))
+    if "/en/" in u:
+        variants.append(u.replace("/en/", "/el/"))
+
+    s = requests.Session()
+    for v in variants:
         try:
-            tables = pd.read_html(html)
-        except ValueError:
+            r = s.get(v, headers=headers, timeout=20, allow_redirects=True)
+            soup = BeautifulSoup(r.text, "lxml")
             tables = []
-        # 2) Fallback: βρες table nodes με soup και διάβασε στοχευμένα
-        if not tables:
-            soup = BeautifulSoup(html, "lxml")
-            t_nodes = soup.find_all("table")
-            for t in t_nodes:
+            for t in soup.find_all("table"):
                 try:
                     part = pd.read_html(str(t))[0]
                     tables.append(part)
                 except Exception:
                     continue
-        if not tables:
-            return None
+            if not tables:
+                continue
+            def score(df):
+                cols = [re.sub(r"\W+","",str(c).lower()) for c in df.columns]
+                keys = ["pir","min","λεπ","pts","πον","date","ημ","opponent","αντιπ"]
+                return sum(any(k in c for c in cols) for k in keys)
+            return max(tables, key=score)
+        except Exception:
+            continue
 
-        # Διάλεξε ό,τι μοιάζει περισσότερο με gamelog
-        def score(df):
-            cols = [re.sub(r"\W+", "", str(c).lower()) for c in df.columns]
-            keys = ["pir","min","λεπ","pts","πον","date","ημ","opponent","αντιπ"]
-            return sum(any(k in c for c in cols) for k in keys)
+    return None   # <-- ΣΩΣΤΑ μέσα στη function
 
-        return max(tables, key=score)
         
 def show_player_page(player_code: str):
-    """Πρώτα προσπαθεί από το δικό σου gamelogs CSV. Αν δεν υπάρχει, δοκιμάζει scraping."""
-    st.experimental_set_query_params(player_code=player_code)  # κρατά το URL καθαρό
+    """Δείξε σελίδα παίκτη: gamelogs από CSV ή scraping."""
+    import pandas as pd
+
     pname = str(player_code)
 
-    # 1) Προσπάθησε από cache/CSV gamelogs
-    gl_df = globals().get("df_gamelogs")
-    if gl_df is None:
-        try:
-            gl_df = pd.read_csv(f"out/player_gamelogs_2025_perGame.csv")
-        except Exception:
-            gl_df = None
+    # 1) πάρε το URL από το mapping
+    try:
+        urls_df = pd.read_csv("out/player_urls_2025.csv")
+        row = urls_df[urls_df["player_code"].astype(str) == str(player_code)].head(1)
+    except Exception:
+        row = pd.DataFrame()
 
-    if gl_df is not None and not gl_df.empty:
-        m = None
-        for key in ["player_code","code","playerCode"]:
-            if key in gl_df.columns:
-                m = gl_df[gl_df[key].astype(str) == str(player_code)]
-                break
-        if m is not None and not m.empty:
-            # όνομα αν υπάρχει στο gamelogs
-            for nc in ["Player","player_name","name"]:
-                if nc in m.columns and m[nc].notna().any():
-                    pname = str(m[nc].dropna().iloc[0]); break
-            st.title(f"{pname} — Αναλυτικά (Game-by-Game)")
-            # προσπάθησε να βρεις ένα date column
-            date_col = None
-            for dc in ["game_date","gameDate","Date","date"]:
-                if dc in m.columns: date_col = dc; break
-            if date_col:
-                m = m.sort_values(date_col)
-            st.dataframe(m, use_container_width=True)
-            for c in ["Πόντοι","PTS","PIR","pir"]:
-                if c in m.columns:
-                    st.line_chart(m[c])
-            return  # OK, τελειώσαμε
+    player_url = None
+    if not row.empty:
+        player_url = str(row.iloc[0].get("player_url", "")).strip()
+        pname = row.iloc[0].get("Player", pname)
+
+    st.title(f"{pname} — Αναλυτικά (Game-by-Game)")
+
+    if not player_url:
+        st.warning("Δεν βρέθηκε player_url για αυτόν τον παίκτη στο out/player_urls_2025.csv.")
+        return
+
+    # 2) κάνε scrape τον πίνακα
+    gl = scrape_gamelog_table(player_url)
+
+    if gl is None or gl.empty:
+        st.warning("Δεν βρέθηκε HTML πίνακας με gamelogs στη σελίδα του παίκτη.")
+        st.markdown(f"[Άνοιγμα επίσημου προφίλ]({player_url})")
+        return
+
+    # 3) δείξε τον πίνακα και mini charts
+    st.dataframe(gl, use_container_width=True)
+
+    for c in ["Πόντοι", "PTS", "PIR", "pir"]:
+        if c in gl.columns:
+            st.line_chart(gl[c])
+
 
     # 2) Fallback: πάρε URL από mapping και δοκίμασε scraping
     player_url = None
