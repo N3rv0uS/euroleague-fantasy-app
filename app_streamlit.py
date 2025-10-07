@@ -49,16 +49,68 @@ if player_code:
                 st.line_chart(gl[c])
         st.stop()
 
+@st.cache_data(ttl=3600)
 def scrape_gamelog_table(player_url: str) -> pd.DataFrame:
-    import requests
-    html = requests.get(player_url, headers={"User-Agent":"eurol-app/1.0"}).text
-    tables = pd.read_html(html)
-    def score(df):
-        cols = [re.sub(r"\W+","",str(c).lower()) for c in df.columns]
-        keys = ["pir","min","λεπ","pts","πον","date","ημ","opponent","αντιπ"]
-        return sum(any(k in c for c in cols) for k in keys)
-    best = max(tables, key=score)
-    return best
+    import requests, re
+    from bs4 import BeautifulSoup
+    import pandas as pd
+
+    headers = {
+        "User-Agent": "eurol-app/1.1 (+stats)",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "el,en;q=0.8",
+    }
+
+    def _read_best_table(html: str) -> pd.DataFrame | None:
+        # 1) δοκίμασε κατευθείαν όλα τα tables
+        try:
+            tables = pd.read_html(html)
+        except ValueError:
+            tables = []
+        # 2) fallback: εντόπισε πρώτα <table> με soup και διάβασε στοχευμένα
+        if not tables:
+            soup = BeautifulSoup(html, "lxml")
+            t_candidates = soup.find_all("table")
+            for t in t_candidates:
+                try:
+                    part = pd.read_html(str(t))[0]
+                    tables.append(part)
+                except Exception:
+                    continue
+        if not tables:
+            return None
+        # επίλεξε το “πιο gamelog” table
+        def score(df):
+            cols = [re.sub(r"\W+", "", str(c).lower()) for c in df.columns]
+            keys = ["pir","min","λεπ","pts","πον","date","ημ","opponent","αντιπ"]
+            return sum(any(k in c for c in cols) for k in keys)
+        return max(tables, key=score)
+
+    # Δοκίμασε διάφορες παραλλαγές URL
+    variants = []
+    u = player_url.strip()
+    variants.append(u)
+    variants.append(u.rstrip("/"))
+    if not u.endswith("/"):
+        variants.append(u + "/")
+    if "/el/" in u:
+        variants.append(u.replace("/el/", "/en/"))
+    elif "/en/" in u:
+        variants.append(u.replace("/en/", "/el/"))
+
+    s = requests.Session()
+    for v in variants:
+        try:
+            r = s.get(v, headers=headers, timeout=20, allow_redirects=True)
+            html = r.text
+            best = _read_best_table(html)
+            if best is not None and not best.empty:
+                return best
+        except Exception:
+            continue
+
+    raise ValueError("No tables found")
+
 
 def link_for(pcode:str) -> str:
     return "?" + urlencode({"player_code": pcode})
@@ -660,8 +712,8 @@ st.subheader("Season Averages (με τις ζητούμενες στήλες + A
 # --- μικρό font για τον πίνακα ---
 st.markdown("""
 <style>
-.small-table table { font-size: 12px; }
-.small-table th, .small-table td { padding: 4px 8px; }
+.small-table table { font-size: 14px; }
+.small-table th, .small-table td { padding: 6px 10px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -679,22 +731,17 @@ if "Player" in table_df.columns and "player_code" in table_df.columns:
         _plink_player(c, n) for c, n in zip(table_df["player_code"], table_df["Player"])
     ]
 
-# 3) ποια columns θα δείξουμε (με βάση feat_cols)
+# 3) ποια columns θα δείξουμε (με βάση final_cols)
 display_cols = [c for c in final_cols if c in table_df.columns]
 
-# 4) Show more / Show less
-if "show_all" not in st.session_state:
-    st.session_state["show_all"] = False
-
-if st.session_state["show_all"]:
-    display_df = table_df[display_cols].reset_index(drop=True)
-    if st.button("Show less", key="less"):
-        st.session_state["show_all"] = False
-        st.rerun()
-else:
-    display_df = table_df[display_cols].head(30).reset_index(drop=True)
+# Κουμπί ΚΑΤΩ από τον πίνακα
+if not is_all:
     if st.button("Show more", key="more"):
         st.session_state["show_all"] = True
+        st.rerun()
+else:
+    if st.button("Show less", key="less"):
+        st.session_state["show_all"] = False
         st.rerun()
 
 # 5) render με μικρότερο font
@@ -704,10 +751,6 @@ st.markdown(
 )
 
 
-#st.markdown(
-   #table_df[final_cols].reset_index(drop=True).to_html(index=False, escape=False),
-    #unsafe_allow_html=True,
-#)
 # ========= ΤΕΛΟΣ ΑΛΛΑΓΗΣ =========
 
 
