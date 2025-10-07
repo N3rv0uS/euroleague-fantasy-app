@@ -664,25 +664,6 @@ st.markdown(
 
 
 
-def page_player(pcode: str):
-    row = df[df["player_code"].astype(str)==str(pcode)].head(1)
-    if row.empty: 
-        st.error("Player not found"); return
-    name = row.iloc[0].get("player_name") or row.iloc[0].get("Player")
-    url  = row.iloc[0].get("player_url")
-    st.header(f"{name} — Gamelogs")
-    if not url:
-        st.warning("Δεν υπάρχει player_url για αυτόν τον παίκτη."); return
-    gl = scrape_gamelog_table(url)
-    st.dataframe(gl, use_container_width=True)
-    for c in ["Πόντοι","PTS","PIR","pir"]:
-        if c in gl.columns:
-            st.line_chart(gl[c])
-
-if player_code:
-    page_player(player_code)
-else:
-    page_main()
 
 # ----------------- ANALYTICS TABS -----------------
 tabs = st.tabs([
