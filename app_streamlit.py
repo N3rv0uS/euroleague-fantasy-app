@@ -74,7 +74,7 @@ def scrape_gamelog_table(player_url: str):
         "Accept-Language": "el,en;q=0.8",
     }
 
-    # δοκίμασε EL/EN & με/χωρίς /
+    # φτιάξε παραλλαγές URL
     variants = []
     u = player_url.strip()
     variants.append(u)
@@ -108,16 +108,15 @@ def scrape_gamelog_table(player_url: str):
         except Exception:
             continue
 
-    return None   # <-- ΣΩΣΤΑ μέσα στη function
+    return None   # σωστά μέσα στη function
 
-        
+
 def show_player_page(player_code: str):
     """Δείξε σελίδα παίκτη: gamelogs από CSV ή scraping."""
     import pandas as pd
 
     pname = str(player_code)
 
-    # 1) πάρε το URL από το mapping
     try:
         urls_df = pd.read_csv("out/player_urls_2025.csv")
         row = urls_df[urls_df["player_code"].astype(str) == str(player_code)].head(1)
@@ -132,57 +131,28 @@ def show_player_page(player_code: str):
     st.title(f"{pname} — Αναλυτικά (Game-by-Game)")
 
     if not player_url:
-        st.warning("Δεν βρέθηκε player_url για αυτόν τον παίκτη στο out/player_urls_2025.csv.")
+        st.warning("Δεν βρέθηκε player_url για αυτόν τον παίκτη.")
         return
 
-    # 2) κάνε scrape τον πίνακα
     gl = scrape_gamelog_table(player_url)
 
     if gl is None or gl.empty:
-        st.warning("Δεν βρέθηκε HTML πίνακας με gamelogs στη σελίδα του παίκτη.")
+        st.warning("Δεν βρέθηκε HTML πίνακας με gamelogs στη σελίδα.")
         st.markdown(f"[Άνοιγμα επίσημου προφίλ]({player_url})")
         return
 
-    # 3) δείξε τον πίνακα και mini charts
     st.dataframe(gl, use_container_width=True)
-
     for c in ["Πόντοι", "PTS", "PIR", "pir"]:
         if c in gl.columns:
             st.line_chart(gl[c])
 
 
-    # 2) Fallback: πάρε URL από mapping και δοκίμασε scraping
-    player_url = None
-    try:
-        urls_map = pd.read_csv("out/player_urls_2025.csv")
-        row = urls_map[urls_map["player_code"].astype(str)==str(player_code)].head(1)
-        if not row.empty:
-            player_url = str(row.iloc[0].get("player_url","")).strip()
-            pname = row.iloc[0].get("Player", pname)
-    except Exception:
-        pass
-
-    st.title(f"{pname} — Αναλυτικά (Game-by-Game)")
-    if not player_url:
-        st.warning("Δεν βρέθηκε player_url για αυτόν τον παίκτη στο out/player_urls_2025.csv.")
-        return
-
-    gl = scrape_gamelog_table(player_url)
-    if gl is None or gl.empty:
-        st.warning("Δεν εντοπίστηκε HTML πίνακας με gamelogs στη σελίδα του παίκτη.")
-        st.markdown(f"[Άνοιγμα επίσημου προφίλ]({player_url})")
-        return
-
-    st.dataframe(gl, use_container_width=True)
-    for c in ["Πόντοι","PTS","PIR","pir"]:
-        if c in gl.columns:
-            st.line_chart(gl[c])
-    st.stop()
-# ---- Router: αν υπάρχει ?player_code, δείξε τον παίκτη και σταμάτα το υπόλοιπο ----
+# ---- Router: αν υπάρχει ?player_code, δείξε τον παίκτη και σταμάτα ----
 pc = st.query_params.get("player_code")
 if pc:
     show_player_page(pc)
     st.stop()
+
     
     # Παίξε με παραλλαγές URL (slash & γλώσσα)
     variants = []
