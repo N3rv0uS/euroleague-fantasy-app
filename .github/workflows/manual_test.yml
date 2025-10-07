@@ -1,0 +1,11 @@
+# .github/workflows/manual_test.yml
+name: manual-test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ok:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "It works ✅"
