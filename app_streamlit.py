@@ -161,7 +161,7 @@ def show_player_page(player_code: str):
     for c in ["Πόντοι","PTS","PIR","pir"]:
         if c in gl.columns:
             st.line_chart(gl[c])
-
+    st.stop()
 # ---- Router: αν υπάρχει ?player_code, δείξε τον παίκτη και σταμάτα το υπόλοιπο ----
 pc = st.query_params.get("player_code")
 if pc:
