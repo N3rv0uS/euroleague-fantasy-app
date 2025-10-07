@@ -50,28 +50,28 @@ if player_code:
         st.stop()
 
 @st.cache_data(ttl=3600)
-def scrape_gamelog_table(player_url: str) -> pd.DataFrame:
+def scrape_gamelog_table(player_url: str) -> pd.DataFrame | None:
     import requests, re
     from bs4 import BeautifulSoup
     import pandas as pd
 
     headers = {
-        "User-Agent": "eurol-app/1.1 (+stats)",
+        "User-Agent": "eurol-app/1.2 (+stats)",
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "el,en;q=0.8",
     }
 
-    def _read_best_table(html: str) -> pd.DataFrame | None:
-        # 1) δοκίμασε κατευθείαν όλα τα tables
+    def _pick_best_table(html: str) -> pd.DataFrame | None:
+        # 1) Δοκίμασε απευθείας read_html
         try:
             tables = pd.read_html(html)
         except ValueError:
             tables = []
-        # 2) fallback: εντόπισε πρώτα <table> με soup και διάβασε στοχευμένα
+        # 2) Fallback: βρες table nodes με soup και διάβασε στοχευμένα
         if not tables:
             soup = BeautifulSoup(html, "lxml")
-            t_candidates = soup.find_all("table")
-            for t in t_candidates:
+            t_nodes = soup.find_all("table")
+            for t in t_nodes:
                 try:
                     part = pd.read_html(str(t))[0]
                     tables.append(part)
@@ -79,12 +79,38 @@ def scrape_gamelog_table(player_url: str) -> pd.DataFrame:
                     continue
         if not tables:
             return None
-        # επίλεξε το “πιο gamelog” table
+
+        # Διάλεξε ό,τι μοιάζει περισσότερο με gamelog
         def score(df):
             cols = [re.sub(r"\W+", "", str(c).lower()) for c in df.columns]
             keys = ["pir","min","λεπ","pts","πον","date","ημ","opponent","αντιπ"]
             return sum(any(k in c for c in cols) for k in keys)
+
         return max(tables, key=score)
+
+    # Παίξε με παραλλαγές URL (slash & γλώσσα)
+    variants = []
+    u = (player_url or "").strip()
+    if not u:
+        return None
+    variants.append(u)
+    variants.append(u.rstrip("/"))
+    if not u.endswith("/"): variants.append(u + "/")
+    if "/el/" in u: variants.append(u.replace("/el/", "/en/"))
+    if "/en/" in u: variants.append(u.replace("/en/", "/el/"))
+
+    s = requests.Session()
+    for v in variants:
+        try:
+            r = s.get(v, headers=headers, timeout=20, allow_redirects=True)
+            best = _pick_best_table(r.text)
+            if best is not None and not best.empty:
+                return best
+        except Exception:
+            continue
+
+    return None  # ΠΟΤΕ μην κάνεις raise εδώ — άσε τον caller να δείξει μήνυμα
+
 
     # Δοκίμασε διάφορες παραλλαγές URL
     variants = []
