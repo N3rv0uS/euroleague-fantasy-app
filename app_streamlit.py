@@ -641,7 +641,7 @@ if "show_all" not in st.session_state:
     st.session_state["show_all"] = False
 
 # φτιάξε το df που θα εμφανιστεί
-display_df = _table[feat_cols].reset_index(drop=True)
+display_df = _table[final_cols].reset_index(drop=True)
 
 if not st.session_state["show_all"]:
     display_df = display_df.head(30)
