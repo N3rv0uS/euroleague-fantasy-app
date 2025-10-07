@@ -6,7 +6,33 @@ from typing import Optional, Dict, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+import os, re, pandas as pd, streamlit as st
+from urllib.parse import urlencode
 
+SEASON = "2025"  # ή E2025 αν έτσι δουλεύεις
+avg_path = f"out/players_{SEASON}_perGame.csv"
+urls_path = f"out/player_urls_{SEASON}.csv"
+
+df_avg = pd.read_csv(avg_path)
+df_urls = pd.read_csv(urls_path)
+df = df_avg.merge(df_urls[["player_code","player_url"]], on="player_code", how="left")
+
+qp = st.query_params
+player_code = qp.get("player_code")
+@st.cache_data(ttl=3600)
+def scrape_gamelog_table(player_url: str) -> pd.DataFrame:
+    import requests
+    html = requests.get(player_url, headers={"User-Agent":"eurol-app/1.0"}).text
+    tables = pd.read_html(html)
+    def score(df):
+        cols = [re.sub(r"\W+","",str(c).lower()) for c in df.columns]
+        keys = ["pir","min","λεπ","pts","πον","date","ημ","opponent","αντιπ"]
+        return sum(any(k in c for c in cols) for k in keys)
+    best = max(tables, key=score)
+    return best
+
+def link_for(pcode:str) -> str:
+    return "?" + urlencode({"player_code": pcode})
 # ---------- ΡΥΘΜΙΣΕΙΣ ----------
 OUT_DIR = Path("out")
 st.set_page_config(page_title="EuroLeague Fantasy – Player Game Logs", layout="wide")
@@ -607,6 +633,33 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
 )
+def page_main():
+    st.title("Season Averages")
+    show = df.copy()
+    show["Gamelogs"] = show["player_code"].apply(lambda x: f"[🔍]({link_for(str(x))})")
+    cols = ["player_name","player_team_name","gamesPlayed","minutesPlayed","pir","Gamelogs"]
+    cols = [c for c in cols if c in show.columns]
+    st.dataframe(show[cols], use_container_width=True)
+
+def page_player(pcode: str):
+    row = df[df["player_code"].astype(str)==str(pcode)].head(1)
+    if row.empty: 
+        st.error("Player not found"); return
+    name = row.iloc[0].get("player_name") or row.iloc[0].get("Player")
+    url  = row.iloc[0].get("player_url")
+    st.header(f"{name} — Gamelogs")
+    if not url:
+        st.warning("Δεν υπάρχει player_url για αυτόν τον παίκτη."); return
+    gl = scrape_gamelog_table(url)
+    st.dataframe(gl, use_container_width=True)
+    for c in ["Πόντοι","PTS","PIR","pir"]:
+        if c in gl.columns:
+            st.line_chart(gl[c])
+
+if player_code:
+    page_player(player_code)
+else:
+    page_main()
 
 # ----------------- ANALYTICS TABS -----------------
 tabs = st.tabs([
