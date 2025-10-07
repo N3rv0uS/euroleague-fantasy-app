@@ -1,0 +1,79 @@
+name: build-player-urls
+
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season code (e.g. E2025 or U2025 or 2025)"
+        required: true
+        default: "E2025"
+      competition:
+        description: "Competition (E=EuroLeague, U=EuroCup)"
+        required: true
+        default: "E"
+      lang:
+        description: "Language (el or en)"
+        required: true
+        default: "el"
+
+jobs:
+  build_urls:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install --upgrade pip
+          pip install pandas requests
+
+      - name: Resolve players CSV
+        id: resolve_csv
+        shell: bash
+        run: |
+          set -euo pipefail
+          SEASON="${{ github.event.inputs.season }}"
+          C1="out/players_${SEASON}_perGame.csv"
+          C2="out/players_${SEASON#E}_perGame.csv"
+          C3="out/players_${SEASON#U}_perGame.csv"
+          INFILE=""
+          for p in "$C1" "$C2" "$C3"; do
+            if [ -f "$p" ]; then INFILE="$p"; break; fi
+          done
+          if [ -z "${INFILE:-}" ]; then
+            echo "No input CSV found."; ls -la out || true; exit 1
+          fi
+          echo "infile=$INFILE" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect CSV
+        env:
+          INFILE: ${{ steps.resolve_csv.outputs.infile }}
+        run: |
+          python -c "import os,pandas as pd;p=os.environ['INFILE'];d=pd.read_csv(p,nrows=5);print('Using CSV:',p);print('Columns:',list(d.columns));print(d.head().to_string(index=False))"
+
+      - name: Run build_player_urls.py
+        env:
+          INFILE: ${{ steps.resolve_csv.outputs.infile }}
+        run: |
+          python scripts/build_player_urls.py \
+            --season "${{ github.event.inputs.season }}" \
+            --competition "${{ github.event.inputs.competition }}" \
+            --lang "${{ github.event.inputs.lang }}" \
+            --infile "$INFILE"
+
+      - name: Commit changes (if any)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "out/player_urls_${{ github.event.inputs.season }}.csv" || true
+          git diff --cached --quiet && echo "No changes" || git commit -m "Update player_urls for ${{ github.event.inputs.season }} [skip ci]"
+          git push
