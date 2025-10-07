@@ -719,6 +719,7 @@ st.markdown("""
 
 
 def _plink_player(code, name):
+    from urllib.parse import urlencode
     qs = urlencode({"player_code": str(code)})
     return f'<a href="?{qs}" style="text-decoration:none;">{name}</a>'
 
