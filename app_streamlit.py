@@ -662,13 +662,7 @@ st.markdown(
 )
 # ========= ΤΕΛΟΣ ΑΛΛΑΓΗΣ =========
 
-def page_main():
-    st.title("Season Averages")
-    show = df.copy()
-    show["Gamelogs"] = show["player_code"].apply(lambda x: f"[🔍]({link_for(str(x))})")
-    cols = ["player_name","player_team_name","gamesPlayed","minutesPlayed","pir","Gamelogs"]
-    cols = [c for c in cols if c in show.columns]
-    st.dataframe(show[cols], use_container_width=True)
+
 
 def page_player(pcode: str):
     row = df[df["player_code"].astype(str)==str(pcode)].head(1)
@@ -766,7 +760,7 @@ with tabs[1]:
     "Stability", "Form3", "All_Score", "PredictScore"
     ]
     feat_cols = [c for c in feat_cols if c in filtered_players.columns]
-    st.dataframe(filtered_players[feat_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+    #st.dataframe(filtered_players[feat_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
 
 # --- TAB 3: Position-aware Picks ---
 with tabs[2]:
