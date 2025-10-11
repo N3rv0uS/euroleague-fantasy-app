@@ -166,8 +166,8 @@ with st.expander("🔄 Run GitHub workflow now"):
     else:
         st.error("Λείπει GH_PAT στο Streamlit secrets.")
     # ΚΑΛΕΣΕ ΤΟΝ ΠΙΝΑΚΑ ΕΔΩ
-    st.divider()
-    render_players_pergame_table()
+        st.divider()
+        render_players_pergame_table()
 
 if player_code:
     try:
