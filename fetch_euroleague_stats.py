@@ -12,6 +12,7 @@ import requests
 import pandas as pd
 import streamlit as st
 from urllib.parse import urlencode
+import inspect
 
 
 BASE_URL = "https://feeds.incrowdsports.com/provider/euroleague-feeds/v3/competitions/{competition}/statistics/players/traditional"
@@ -605,6 +606,8 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         elif args.kind == "gamelogs":
             print(f"[info] Start gamelogs for season={season}, competition={args.competition}, mode={args.mode}")
+            print("fetch_all_player_gamelogs params:", list(inspect.signature(fetch_all_player_gamelogs).parameters))
+
             df = fetch_all_player_gamelogs(
                 season=season,
                 competition=args.competition,
