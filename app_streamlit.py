@@ -952,8 +952,8 @@ def gh_debug(owner: str, repo: str, token: str, workflow_filename: str):
         st.error("❌ 404: Μη προσβάσιμο repo/workflow με αυτό το token (fine-grained access ή λάθος owner/repo/filename).")
 
 with st.expander("🧪 GitHub token debug"):
-    owner = "<OWNER>"  # π.χ. "N3rv0uS"
-    repo  = "<REPO>"   # π.χ. "euroleague-fantasy-app"
+    owner = "N3rv0uS"  # π.χ. "N3rv0uS"
+    repo  = "euroleague-fantasy-app"   # π.χ. "euroleague-fantasy-app"
     wf    = "euroleague_refresh.yml"
     token = st.secrets.get("GH_PAT", "")
     if st.button("Run GH debug"):
@@ -980,8 +980,8 @@ def gh_list_workflows(owner: str, repo: str, token: str):
     st.write(items)
 
 with st.expander("🧪 List GitHub workflows"):
-    owner = "<OWNER>"   # π.χ. N3rv0uS
-    repo  = "<REPO>"    # π.χ. euroleague-fantasy-app
+    owner = "N3rv0uS"   # π.χ. N3rv0uS
+    repo  = "euroleague-fantasy-app"    # π.χ. euroleague-fantasy-app
     token = st.secrets.get("GH_PAT", "")
     if st.button("List workflows"):
         gh_list_workflows(owner, repo, token)
