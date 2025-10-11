@@ -18,36 +18,205 @@ df = df_avg.merge(df_urls[["player_code","player_url"]], on="player_code", how="
 
 qp = st.query_params
 player_code = qp.get("player_code")
+player_code = st.query_params.get("player_code")
+
+if player_code:
+    # αν έχεις ήδη δική σου page_player(player_code), κάλεσέ την και σταμάτα:
+    try:
+        page_player(player_code)  # <-- η δική σου function αν υπάρχει
+        st.stop()
+    except NameError:
+        # αλλιώς, fallback: διάβασε out/player_urls_2025.csv και δείξε gamelog με read_html
+        import pandas as pd, re, requests
+        urls = pd.read_csv("out/player_urls_2025.csv")
+        row = urls[urls["player_code"].astype(str) == str(player_code)].head(1)
+        if row.empty or not str(row.iloc[0].get("player_url","")).strip():
+            st.error("Δεν βρέθηκε player_url για αυτόν τον παίκτη."); st.stop()
+        player_url = row.iloc[0]["player_url"]
+        player_name = row.iloc[0].get("Player", str(player_code))
+
+        st.title(f"{player_name} — Αναλυτικά (Game-by-Game)")
+
+        gl = scrape_gamelog_table(player_url)  # ΧΩΡΙΣ άμεσο pd.read_html εδώ
+        if gl is None or gl.empty:
+            st.warning("Δεν βρέθηκε HTML πίνακας με gamelogs στη σελίδα του παίκτη.")
+            st.markdown(f"[Άνοιγμα επίσημου προφίλ]({player_url})")
+            st.stop()
+
+        st.dataframe(gl, use_container_width=True)
+        for c in ["Πόντοι","PTS","PIR","pir"]:
+            if c in gl.columns:
+                st.line_chart(gl[c])
+        st.stop()
+        def score(df):
+            cols = [re.sub(r"\\W+","",str(c).lower()) for c in df.columns]
+            keys = ["pir","min","λεπ","pts","πον","date","ημ","opponent","αντιπ"]
+            return sum(any(k in c for c in cols) for k in keys)
+        gl = max(tables, key=score)
+        st.dataframe(gl, use_container_width=True)
+        for c in ["Πόντοι","PTS","PIR","pir"]:
+            if c in gl.columns:
+                st.line_chart(gl[c])
+        st.stop()
+
 @st.cache_data(ttl=3600)
-# df: το merged dataframe με columns: player_code, player_name, ...
-def _plink(code, name):
-    qs = urlencode({"player_code": str(code)})
-    # target=_blank για νέο tab (βγάλε το αν δεν το θες)
-    return f'<a href="?{qs}" target="_blank" style="text-decoration:none;">{name}</a>'
+def scrape_gamelog_table(player_url: str) -> pd.DataFrame | None:
+    import requests, re
+    from bs4 import BeautifulSoup
+    import pandas as pd
 
-show = df.copy()
-# Αν το δικό σου column είναι "Player" άλλαξέ το ανάλογα
-show["player_name"] = [
-    _plink(code, name) for code, name in zip(show["player_code"], show["player_name"])
-]
+    headers = {
+        "User-Agent": "eurol-app/1.2 (+stats)",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "el,en;q=0.8",
+    }
 
-cols = ["player_name","player_team_name","gamesPlayed","minutesPlayed","pir"]
-cols = [c for c in cols if c in show.columns]
+    def _pick_best_table(html: str) -> pd.DataFrame | None:
+        # 1) Δοκίμασε απευθείας read_html
+        try:
+            tables = pd.read_html(html)
+        except ValueError:
+            tables = []
+        # 2) Fallback: βρες table nodes με soup και διάβασε στοχευμένα
+        if not tables:
+            soup = BeautifulSoup(html, "lxml")
+            t_nodes = soup.find_all("table")
+            for t in t_nodes:
+                try:
+                    part = pd.read_html(str(t))[0]
+                    tables.append(part)
+                except Exception:
+                    continue
+        if not tables:
+            return None
 
-st.markdown(
-    show[cols].rename(columns={"player_name":"Player"}).to_html(index=False, escape=False),
-    unsafe_allow_html=True,
-)
-def scrape_gamelog_table(player_url: str) -> pd.DataFrame:
-    import requests
-    html = requests.get(player_url, headers={"User-Agent":"eurol-app/1.0"}).text
-    tables = pd.read_html(html)
-    def score(df):
-        cols = [re.sub(r"\W+","",str(c).lower()) for c in df.columns]
-        keys = ["pir","min","λεπ","pts","πον","date","ημ","opponent","αντιπ"]
-        return sum(any(k in c for c in cols) for k in keys)
-    best = max(tables, key=score)
-    return best
+        # Διάλεξε ό,τι μοιάζει περισσότερο με gamelog
+        def score(df):
+            cols = [re.sub(r"\W+", "", str(c).lower()) for c in df.columns]
+            keys = ["pir","min","λεπ","pts","πον","date","ημ","opponent","αντιπ"]
+            return sum(any(k in c for c in cols) for k in keys)
+
+        return max(tables, key=score)
+        
+def show_player_page(player_code: str):
+    """Πρώτα προσπαθεί από το δικό σου gamelogs CSV. Αν δεν υπάρχει, δοκιμάζει scraping."""
+    st.experimental_set_query_params(player_code=player_code)  # κρατά το URL καθαρό
+    pname = str(player_code)
+
+    # 1) Προσπάθησε από cache/CSV gamelogs
+    gl_df = globals().get("df_gamelogs")
+    if gl_df is None:
+        try:
+            gl_df = pd.read_csv(f"out/player_gamelogs_2025_perGame.csv")
+        except Exception:
+            gl_df = None
+
+    if gl_df is not None and not gl_df.empty:
+        m = None
+        for key in ["player_code","code","playerCode"]:
+            if key in gl_df.columns:
+                m = gl_df[gl_df[key].astype(str) == str(player_code)]
+                break
+        if m is not None and not m.empty:
+            # όνομα αν υπάρχει στο gamelogs
+            for nc in ["Player","player_name","name"]:
+                if nc in m.columns and m[nc].notna().any():
+                    pname = str(m[nc].dropna().iloc[0]); break
+            st.title(f"{pname} — Αναλυτικά (Game-by-Game)")
+            # προσπάθησε να βρεις ένα date column
+            date_col = None
+            for dc in ["game_date","gameDate","Date","date"]:
+                if dc in m.columns: date_col = dc; break
+            if date_col:
+                m = m.sort_values(date_col)
+            st.dataframe(m, use_container_width=True)
+            for c in ["Πόντοι","PTS","PIR","pir"]:
+                if c in m.columns:
+                    st.line_chart(m[c])
+            return  # OK, τελειώσαμε
+
+    # 2) Fallback: πάρε URL από mapping και δοκίμασε scraping
+    player_url = None
+    try:
+        urls_map = pd.read_csv("out/player_urls_2025.csv")
+        row = urls_map[urls_map["player_code"].astype(str)==str(player_code)].head(1)
+        if not row.empty:
+            player_url = str(row.iloc[0].get("player_url","")).strip()
+            pname = row.iloc[0].get("Player", pname)
+    except Exception:
+        pass
+
+    st.title(f"{pname} — Αναλυτικά (Game-by-Game)")
+    if not player_url:
+        st.warning("Δεν βρέθηκε player_url για αυτόν τον παίκτη στο out/player_urls_2025.csv.")
+        return
+
+    gl = scrape_gamelog_table(player_url)
+    if gl is None or gl.empty:
+        st.warning("Δεν εντοπίστηκε HTML πίνακας με gamelogs στη σελίδα του παίκτη.")
+        st.markdown(f"[Άνοιγμα επίσημου προφίλ]({player_url})")
+        return
+
+    st.dataframe(gl, use_container_width=True)
+    for c in ["Πόντοι","PTS","PIR","pir"]:
+        if c in gl.columns:
+            st.line_chart(gl[c])
+    st.stop()
+# ---- Router: αν υπάρχει ?player_code, δείξε τον παίκτη και σταμάτα το υπόλοιπο ----
+pc = st.query_params.get("player_code")
+if pc:
+    show_player_page(pc)
+    st.stop()
+    
+    # Παίξε με παραλλαγές URL (slash & γλώσσα)
+    variants = []
+    u = (player_url or "").strip()
+    if not u:
+        return None
+    variants.append(u)
+    variants.append(u.rstrip("/"))
+    if not u.endswith("/"): variants.append(u + "/")
+    if "/el/" in u: variants.append(u.replace("/el/", "/en/"))
+    if "/en/" in u: variants.append(u.replace("/en/", "/el/"))
+
+    s = requests.Session()
+    for v in variants:
+        try:
+            r = s.get(v, headers=headers, timeout=20, allow_redirects=True)
+            best = _pick_best_table(r.text)
+            if best is not None and not best.empty:
+                return best
+        except Exception:
+            continue
+
+    return None  # ΠΟΤΕ μην κάνεις raise εδώ — άσε τον caller να δείξει μήνυμα
+
+
+    # Δοκίμασε διάφορες παραλλαγές URL
+    variants = []
+    u = player_url.strip()
+    variants.append(u)
+    variants.append(u.rstrip("/"))
+    if not u.endswith("/"):
+        variants.append(u + "/")
+    if "/el/" in u:
+        variants.append(u.replace("/el/", "/en/"))
+    elif "/en/" in u:
+        variants.append(u.replace("/en/", "/el/"))
+
+    s = requests.Session()
+    for v in variants:
+        try:
+            r = s.get(v, headers=headers, timeout=20, allow_redirects=True)
+            html = r.text
+            best = _read_best_table(html)
+            if best is not None and not best.empty:
+                return best
+        except Exception:
+            continue
+
+    raise ValueError("No tables found")
+
 
 def link_for(pcode:str) -> str:
     return "?" + urlencode({"player_code": pcode})
@@ -643,41 +812,61 @@ if "All_Score" in filtered_players.columns and "All_Score" not in final_cols:
 if "PredictScore" in filtered_players.columns and "PredictScore" not in final_cols:
     final_cols.append("PredictScore")
 
-
-
 st.subheader("Season Averages (με τις ζητούμενες στήλες + Advanced)")
-st.dataframe(
-    filtered_players[final_cols].reset_index(drop=True),
-    use_container_width=True,
-    hide_index=True,
-)
-def page_main():
-    st.title("Season Averages")
-    show = df.copy()
-    show["Gamelogs"] = show["player_code"].apply(lambda x: f"[🔍]({link_for(str(x))})")
-    cols = ["player_name","player_team_name","gamesPlayed","minutesPlayed","pir","Gamelogs"]
-    cols = [c for c in cols if c in show.columns]
-    st.dataframe(show[cols], use_container_width=True)
 
-def page_player(pcode: str):
-    row = df[df["player_code"].astype(str)==str(pcode)].head(1)
-    if row.empty: 
-        st.error("Player not found"); return
-    name = row.iloc[0].get("player_name") or row.iloc[0].get("Player")
-    url  = row.iloc[0].get("player_url")
-    st.header(f"{name} — Gamelogs")
-    if not url:
-        st.warning("Δεν υπάρχει player_url για αυτόν τον παίκτη."); return
-    gl = scrape_gamelog_table(url)
-    st.dataframe(gl, use_container_width=True)
-    for c in ["Πόντοι","PTS","PIR","pir"]:
-        if c in gl.columns:
-            st.line_chart(gl[c])
+# ========= ΜΟΝΗ ΑΛΛΑΓΗ: κάνουμε τη στήλη Player clickable & render ως HTML =========
+# --- μικρό font για τον πίνακα ---
+st.markdown("""
+<style>
+.small-table table { font-size: 14px; }
+.small-table th, .small-table td { padding: 6px 10px; }
+</style>
+""", unsafe_allow_html=True)
 
-if player_code:
-    page_player(player_code)
+
+def _plink_player(code, name):
+    from urllib.parse import urlencode
+    qs = urlencode({"player_code": str(code)})
+    return f'<a href="?{qs}" style="text-decoration:none;">{name}</a>'
+
+# 1) ξεκινάμε από το filtered_players που ήδη έχεις
+table_df = filtered_players.copy()
+
+# 2) κάνε τη στήλη Player clickable (θέλει και player_code)
+if "Player" in table_df.columns and "player_code" in table_df.columns:
+    table_df["Player"] = [
+        _plink_player(c, n) for c, n in zip(table_df["player_code"], table_df["Player"])
+    ]
+
+# 3) ποια columns θα δείξουμε (με βάση final_cols)
+display_cols = [c for c in final_cols if c in table_df.columns]
+
+# 4) Show more / Show less
+if "show_all" not in st.session_state:
+    st.session_state["show_all"] = False
+
+if st.session_state["show_all"]:
+    display_df = table_df[display_cols].reset_index(drop=True)
+    if st.button("Show less", key="less"):
+        st.session_state["show_all"] = False
+        st.rerun()
 else:
-    page_main()
+    display_df = table_df[display_cols].head(30).reset_index(drop=True)
+    if st.button("Show more", key="more"):
+        st.session_state["show_all"] = True
+        st.rerun()
+
+# 5) render με μικρότερο font
+st.markdown(
+    f"<div class='small-table'>{display_df.to_html(index=False, escape=False)}</div>",
+    unsafe_allow_html=True,
+)
+
+
+# ========= ΤΕΛΟΣ ΑΛΛΑΓΗΣ =========
+
+
+
 
 # ----------------- ANALYTICS TABS -----------------
 tabs = st.tabs([
@@ -755,14 +944,14 @@ with tabs[1]:
     "Stability", "Form3", "All_Score", "PredictScore"
     ]
     feat_cols = [c for c in feat_cols if c in filtered_players.columns]
-    st.dataframe(filtered_players[feat_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+    #st.dataframe(filtered_players[feat_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
 
 # --- TAB 3: Position-aware Picks ---
 with tabs[2]:
     st.markdown("### Position mapping (optional)")
     st.caption("Αν δεν υπάρχει στήλη θέσης στο CSV, μπορείς να δώσεις manual mapping σε μορφή `Player,POS` ή `player_code,POS` (POS ∈ G/F/C)."
                " Μία γραμμή ανά παίκτη. Αν δοθεί π.χ. `G/F`, λαμβάνεται το πρώτο γράμμα.")
-    mapping_text = st.text_area("Manual mapping", value="", height=120)
+    mapping_text = st.text_area("Μετατροπή", value="", height=120)
 
     players_pos = ensure_position_column(filtered_players.copy())
     if mapping_text.strip():
@@ -809,5 +998,3 @@ with tabs[3]:
     ]
     show_cols = [c for c in show_cols if c in top_all.columns]
     st.dataframe(top_all[show_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
-
-
