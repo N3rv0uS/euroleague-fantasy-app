@@ -8,6 +8,7 @@ import streamlit as st
 import os, re, pandas as pd, streamlit as st
 from urllib.parse import urlencode
 import requests
+import json, os
 
 st.write("Has GH_PAT:", "GH_PAT" in st.secrets)
 SEASON = "2025"  # ή E2025 αν έτσι δουλεύεις
@@ -908,3 +909,55 @@ with tabs[3]:
     ]
     show_cols = [c for c in show_cols if c in top_all.columns]
     st.dataframe(top_all[show_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+
+
+def gh_debug(owner: str, repo: str, token: str, workflow_filename: str):
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write("**Check /user**")
+        r = requests.get("https://api.github.com/user", headers=headers, timeout=15)
+        st.code(f"GET /user → {r.status_code}")
+        try:
+            st.json(r.json())
+        except Exception:
+            st.write(r.text)
+
+    with col2:
+        st.write("**Check workflows list**")
+        url_wf = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows"
+        r2 = requests.get(url_wf, headers=headers, timeout=15)
+        st.code(f"GET {url_wf} → {r2.status_code}")
+        try:
+            st.json(r2.json())
+        except Exception:
+            st.write(r2.text)
+
+    st.write("**Try dispatch**")
+    url_dispatch = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_filename}/dispatches"
+    r3 = requests.post(url_dispatch, headers=headers, json={"ref": "main"}, timeout=20)
+    st.code(f"POST {url_dispatch} → {r3.status_code}")
+    st.write(r3.text if r3.text else "(no body)")
+    if r3.status_code == 204:
+        st.success("✅ Dispatch OK – δες το GitHub Actions.")
+    elif r3.status_code == 401:
+        st.error("❌ 401 Bad credentials: λάθος/μη εξουσιοδοτημένο token (scopes/SSO).")
+    elif r3.status_code == 404:
+        st.error("❌ 404: Μη προσβάσιμο repo/workflow με αυτό το token (fine-grained access ή λάθος owner/repo/filename).")
+
+with st.expander("🧪 GitHub token debug"):
+    owner = "<OWNER>"  # π.χ. "N3rv0uS"
+    repo  = "<REPO>"   # π.χ. "euroleague-fantasy-app"
+    wf    = "euroleague_refresh.yml"
+    token = st.secrets.get("GH_PAT", "")
+    if st.button("Run GH debug"):
+        if not token:
+            st.error("Λείπει GH_PAT.")
+        else:
+            gh_debug(owner, repo, token, wf)
