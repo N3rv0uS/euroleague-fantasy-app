@@ -961,3 +961,27 @@ with st.expander("🧪 GitHub token debug"):
             st.error("Λείπει GH_PAT.")
         else:
             gh_debug(owner, repo, token, wf)
+import requests
+
+def gh_list_workflows(owner: str, repo: str, token: str):
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    r = requests.get(url, headers=headers, timeout=20)
+    st.code(f"GET {url} -> {r.status_code}")
+    data = r.json()
+    # Δείξε όνομα & id για να αντιγράψεις
+    items = []
+    for wf in data.get("workflows", []):
+        items.append({"name": wf.get("name"), "path": wf.get("path"), "id": wf.get("id")})
+    st.write(items)
+
+with st.expander("🧪 List GitHub workflows"):
+    owner = "<OWNER>"   # π.χ. N3rv0uS
+    repo  = "<REPO>"    # π.χ. euroleague-fantasy-app
+    token = st.secrets.get("GH_PAT", "")
+    if st.button("List workflows"):
+        gh_list_workflows(owner, repo, token)
