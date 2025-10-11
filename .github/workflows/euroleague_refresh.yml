@@ -33,11 +33,11 @@ jobs:
       - name: Smoke (προαιρετικό)
         run: |
           echo "Running smoke checks..."
-          # π.χ. python scripts/fetch_euroleague_stats.py --kind smoke --season E2025
+          # π.χ. python fetch_euroleague_stats.py --kind smoke --season E2025
 
       - name: Pull Season Averages
         run: |
-          python scripts/fetch_euroleague_stats.py --kind season --season E2025 --mode perGame
+          python fetch_euroleague_stats.py --kind season --season E2025 --mode perGame
 
       - name: Build player URLs (για click σε παίκτες)
         run: |
