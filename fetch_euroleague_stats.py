@@ -264,6 +264,7 @@ def fetch_all_gamelogs_single_call(
     except Exception as e:
         print(f"[info] single-call gamelogs endpoint not available or failed: {e}", file=sys.stderr)
         return pd.DataFrame()
+# dummy commit to refresh GitHub Actions
 
 def fetch_all_player_gamelogs(
     season: str,
