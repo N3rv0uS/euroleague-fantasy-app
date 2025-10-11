@@ -27,6 +27,21 @@ qp = st.query_params
 player_code = qp.get("player_code")
 player_code = st.query_params.get("player_code")
 
+def get_file_sha(owner: str, repo: str, path: str, token: str = "") -> str:
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    headers = {"Authorization": f"token {token}"} if token else {}
+    r = requests.get(url, headers=headers, timeout=20)
+    r.raise_for_status()
+    return r.json()["sha"]
+
+@st.cache_data
+def load_csv_by_sha(owner: str, repo: str, path: str, ref_sha: str) -> pd.DataFrame:
+    """Cache key = ref_sha => κάθε νέο commit στο αρχείο φρεσκάρει αυτόματα τα data."""
+    url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/{path}"
+    r = requests.get(url, timeout=20)
+    r.raise_for_status()
+    return pd.read_csv(io.StringIO(r.text))
+    
 def gh_list_workflows(owner: str, repo: str, token: str):
     """Επιστρέφει λίστα διαθέσιμων workflows στο repo."""
     url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows"
