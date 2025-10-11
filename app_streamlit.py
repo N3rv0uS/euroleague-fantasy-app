@@ -27,6 +27,24 @@ qp = st.query_params
 player_code = qp.get("player_code")
 player_code = st.query_params.get("player_code")
 
+def gh_list_workflows(owner: str, repo: str, token: str):
+    """Επιστρέφει λίστα διαθέσιμων workflows στο repo."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    r = requests.get(url, headers=headers, timeout=20)
+    if r.status_code != 200:
+        st.error(f"GitHub API error {r.status_code}")
+        return []
+    data = r.json()
+    workflows = [
+        {"name": wf.get("name"), "path": wf.get("path"), "id": wf.get("id")}
+        for wf in data.get("workflows", [])
+    ]
+    return workflows
 
 def trigger_actions_dispatch(owner: str, repo: str, workflow_filename: str, token: str, ref: str = "main") -> tuple[bool, str]:
     """
