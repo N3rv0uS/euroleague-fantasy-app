@@ -9,6 +9,10 @@ import os, re, pandas as pd, streamlit as st
 from urllib.parse import urlencode
 import requests
 import json, os
+import streamlit as st
+import requests
+import time
+from datetime import datetime
 
 st.write("Has GH_PAT:", "GH_PAT" in st.secrets)
 SEASON = "2025"  # ή E2025 αν έτσι δουλεύεις
@@ -43,30 +47,54 @@ def trigger_actions_dispatch(owner: str, repo: str, workflow_filename: str, toke
     ok = (200 <= r.status_code < 300)
     return ok, ("" if ok else f"{r.status_code}: {r.text}")
 
-# === UI κουμπί ===
-with st.expander("🔄 Update δεδομένων τώρα"):
-    st.write("Τρέχει τον ίδιο μηχανισμό με το nightly job (season averages + gamelogs).")
-    colA, colB = st.columns([1,2])
-    with colA:
-        do_update = st.button("🔁 Update now")
-    with colB:
-        st.caption("Απαιτεί GH_PAT στο Streamlit secrets.")
+# --- Expander για manual GitHub refresh ---
+with st.expander("🔄 Run GitHub workflow now"):
+    owner = "N3rv0uS"
+    repo = "euroleague-fantasy-app"
+    token = st.secrets.get("GH_PAT", "")
 
-    if do_update:
-        owner = "N3rv0uS"   # π.χ. "myuser" ή "myorg"
-        repo  = "euroleague-fantasy-app"    # π.χ. "euroleague-fantasy-app"
-        wf    = "euroleague_refresh.yml"
-        token = st.secrets.get("GH_PAT", "")
+    if token:
+        workflows = gh_list_workflows(owner, repo, token)
+        choices = {f"{w['name']}  ·  {w['path']}": w["id"] for w in workflows}
+        sel = st.selectbox("Διάλεξε workflow", list(choices.keys()), index=len(choices)-1)
 
-        if not token:
-            st.error("Λείπει το secret GH_PAT στο Streamlit (Secrets).")
-        else:
-            with st.spinner("Triggering GitHub Actions workflow..."):
-                ok, err = trigger_actions_dispatch(owner, repo, wf, token, ref="main")
+        if st.button("▶ Run selected"):
+            wf_id = choices[sel]
+            ok, err = trigger_actions_dispatch(owner, repo, wf_id, token, ref="main")
+
             if ok:
-                st.success("✅ Έγινε trigger του workflow. Δες την πρόοδο στο GitHub → Actions.")
+                st.success("✅ Dispatch OK – ξεκίνησε το update στο GitHub!")
+                progress = st.progress(0)
+                status_text = st.empty()
+                pct = 0
+
+                # Poll για έως 5 λεπτά (30 * 10s)
+                for i in range(30):
+                    time.sleep(10)
+                    status, conclusion = get_latest_run_status(owner, repo, wf_id, token)
+
+                    if status == "in_progress":
+                        pct = min(pct + 5, 90)
+                        progress.progress(pct)
+                        status_text.info("🔄 Update σε εξέλιξη… (GitHub Actions running)")
+                    elif status == "completed":
+                        progress.progress(100)
+                        if conclusion == "success":
+                            status_text.success(f"✅ Update ολοκληρώθηκε επιτυχώς ({datetime.utcnow():%H:%M UTC})")
+                        else:
+                            status_text.error(f"❌ Απέτυχε ({conclusion})")
+                        break
+                    else:
+                        status_text.write(f"⌛ Περιμένω να ξεκινήσει run... ({status})")
+                else:
+                    status_text.warning("⚠️ Δεν ήρθε αποτέλεσμα μέσα στο χρονικό όριο (5 λεπτά).")
+
             else:
                 st.error(f"❌ Αποτυχία trigger: {err}")
+
+    else:
+        st.error("Λείπει GH_PAT στο Streamlit secrets.")
+
 
 if player_code:
     try:
