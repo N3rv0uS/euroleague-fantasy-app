@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 import os, re, pandas as pd, streamlit as st
 from urllib.parse import urlencode
+import requests
 
 SEASON = "2025"  # ή E2025 αν έτσι δουλεύεις
 avg_path = f"out/players_{SEASON}_perGame.csv"
@@ -19,6 +20,51 @@ df = df_avg.merge(df_urls[["player_code", "player_url"]], on="player_code", how=
 qp = st.query_params
 player_code = qp.get("player_code")
 player_code = st.query_params.get("player_code")
+
+
+def trigger_actions_dispatch(owner: str, repo: str, workflow_filename: str, token: str, ref: str = "main") -> tuple[bool, str]:
+    """
+    Καλεί το GitHub Actions workflow_dispatch για να κάνει refresh.
+    - owner/repo: π.χ. "myuser", "euroleague-fantasy-app"
+    - workflow_filename: π.χ. "euroleague_refresh.yml"
+    - token: PAT με scope repo (βάζεις στο st.secrets['GH_PAT'])
+    - ref: κλάδος (main ή ό,τι χρησιμοποιείς)
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_filename}/dispatches"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    payload = {"ref": ref}
+    r = requests.post(url, headers=headers, json=payload, timeout=20)
+    ok = (200 <= r.status_code < 300)
+    return ok, ("" if ok else f"{r.status_code}: {r.text}")
+
+# === UI κουμπί ===
+with st.expander("🔄 Update δεδομένων τώρα"):
+    st.write("Τρέχει τον ίδιο μηχανισμό με το nightly job (season averages + gamelogs).")
+    colA, colB = st.columns([1,2])
+    with colA:
+        do_update = st.button("🔁 Update now")
+    with colB:
+        st.caption("Απαιτεί GH_PAT στο Streamlit secrets.")
+
+    if do_update:
+        owner = "<OWNER>"   # π.χ. "myuser" ή "myorg"
+        repo  = "<REPO>"    # π.χ. "euroleague-fantasy-app"
+        wf    = "euroleague_refresh.yml"
+        token = st.secrets.get("GH_PAT", "")
+
+        if not token:
+            st.error("Λείπει το secret GH_PAT στο Streamlit (Secrets).")
+        else:
+            with st.spinner("Triggering GitHub Actions workflow..."):
+                ok, err = trigger_actions_dispatch(owner, repo, wf, token, ref="main")
+            if ok:
+                st.success("✅ Έγινε trigger του workflow. Δες την πρόοδο στο GitHub → Actions.")
+            else:
+                st.error(f"❌ Αποτυχία trigger: {err}")
 
 if player_code:
     try:
