@@ -46,6 +46,19 @@ def gh_list_workflows(owner: str, repo: str, token: str):
     ]
     return workflows
 
+def get_latest_run_status(owner, repo, wf_id, token):
+    """Επιστρέφει το status και το conclusion του πιο πρόσφατου run"""
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{wf_id}/runs?per_page=1"
+    headers = {"Authorization": f"token {token}"}
+    r = requests.get(url, headers=headers)
+    if r.status_code != 200:
+        return None, f"GitHub API error: {r.status_code}"
+    runs = r.json().get("workflow_runs", [])
+    if not runs:
+        return None, "No runs found"
+    run = runs[0]
+    return run["status"], run.get("conclusion")
+
 def trigger_actions_dispatch(owner: str, repo: str, workflow_filename: str, token: str, ref: str = "main") -> tuple[bool, str]:
     """
     Καλεί το GitHub Actions workflow_dispatch για να κάνει refresh.
