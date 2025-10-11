@@ -48,7 +48,7 @@ jobs:
       - name: Pull Gamelogs (Schedule→Boxscore)
         continue-on-error: true  # αν δεν έχει ολοκληρωθεί η υλοποίηση, μην αποτυγχάνει το run
         run: |
-          python scripts/fetch_euroleague_stats.py --kind gamelogs --season E2025 --mode perGame
+          python fetch_euroleague_stats.py --kind gamelogs --season E2025 --mode perGame
 
       - name: Commit & Push if changed
         run: |
