@@ -127,6 +127,31 @@ with st.expander("🔄 Run GitHub workflow now"):
                         progress.progress(100)
                         if conclusion == "success":
                             status_text.success(f"✅ Update ολοκληρώθηκε επιτυχώς ({datetime.utcnow():%H:%M UTC})")
+
+                            owner = "N3rv0uS"
+                            repo  = "euroleague-fantasy-app"
+                            token = st.secrets.get("GH_PAT", "")
+                            path  = "out/players_2025_perGame.csv"
+
+                            # παλιό SHA (αν υπάρχει)
+                            old_sha = st.session_state.get("players_csv_sha", None)
+
+                            # περίμενε έως ~60s να αλλάξει το SHA στο GitHub
+                            new_sha = old_sha
+                            for _ in range(12):
+                                time.sleep(5)
+                                try:
+                                    new_sha = get_file_sha(owner, repo, path, token)
+                                    if new_sha != old_sha:
+                                        break
+                                except Exception:
+                                    pass
+
+                            # καθάρισε cache και ξανατρέξε το app
+                            st.cache_data.clear()
+                            if new_sha:
+                                st.session_state["players_csv_sha"] = new_sha
+                            st.rerun()
                         else:
                             status_text.error(f"❌ Απέτυχε ({conclusion})")
                         break
@@ -140,7 +165,9 @@ with st.expander("🔄 Run GitHub workflow now"):
 
     else:
         st.error("Λείπει GH_PAT στο Streamlit secrets.")
-
+    # ΚΑΛΕΣΕ ΤΟΝ ΠΙΝΑΚΑ ΕΔΩ
+    st.divider()
+    render_players_pergame_table()
 
 if player_code:
     try:
@@ -222,6 +249,25 @@ def scrape_gamelog_table(player_url: str):
 
     return None   # σωστά μέσα στη function
 
+# ===== Section renderer για τον πίνακα =====
+def render_players_pergame_table():
+    owner = "N3rv0uS"
+    repo  = "euroleague-fantasy-app"
+    token = st.secrets.get("GH_PAT", "")
+    csv_path = "out/players_2025_perGame.csv"
+
+    # Πάρε το SHA (χρησιμοποιείται σαν cache key)
+    sha = get_file_sha(owner, repo, csv_path, token)
+
+    # Κράτα το SHA και στο session_state (θα το χρειαστείς στο auto-refresh)
+    st.session_state["players_csv_sha"] = sha
+
+    # Φόρτωσε τα δεδομένα και δείξε τον πίνακα
+    df = load_csv_by_sha(owner, repo, csv_path, sha)
+
+    st.subheader("Players — per game (2025)")
+    st.caption(f"Source: {owner}/{repo} · `{csv_path}` · sha: {sha[:7]}")
+    st.dataframe(df, use_container_width=True)
 
 def show_player_page(player_code: str):
     """Δείξε σελίδα παίκτη: gamelogs από CSV ή scraping."""
