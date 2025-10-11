@@ -42,8 +42,9 @@ jobs:
       - name: Build player URLs (για click σε παίκτες)
         run: |
           python scripts/build_player_urls.py \
-            --input out/players_2025_perGame.csv \
-            --output out/player_urls_2025.csv
+            --infile out/players_2025_perGame.csv \
+            --outfile out/player_urls_2025.csv
+
 
       - name: Pull Gamelogs (Schedule→Boxscore)
         continue-on-error: true  # αν δεν έχει ολοκληρωθεί η υλοποίηση, μην αποτυγχάνει το run
