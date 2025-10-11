@@ -9,6 +9,7 @@ import os, re, pandas as pd, streamlit as st
 from urllib.parse import urlencode
 import requests
 
+st.write("Has GH_PAT:", "GH_PAT" in st.secrets)
 SEASON = "2025"  # ή E2025 αν έτσι δουλεύεις
 avg_path = f"out/players_{SEASON}_perGame.csv"
 urls_path = f"out/player_urls_{SEASON}.csv"
