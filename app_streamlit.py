@@ -53,8 +53,8 @@ with st.expander("🔄 Update δεδομένων τώρα"):
         st.caption("Απαιτεί GH_PAT στο Streamlit secrets.")
 
     if do_update:
-        owner = "<OWNER>"   # π.χ. "myuser" ή "myorg"
-        repo  = "<REPO>"    # π.χ. "euroleague-fantasy-app"
+        owner = "N3rv0uS"   # π.χ. "myuser" ή "myorg"
+        repo  = "euroleague-fantasy-app"    # π.χ. "euroleague-fantasy-app"
         wf    = "euroleague_refresh.yml"
         token = st.secrets.get("GH_PAT", "")
 
