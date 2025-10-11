@@ -33,11 +33,11 @@ jobs:
       - name: Smoke (προαιρετικό)
         run: |
           echo "Running smoke checks..."
-          # π.χ. python fetch_euroleague_stats.py --kind smoke --season E2025
+          # π.χ. python fetch_euroleague_stats.py --kind smoke --season 2025
 
       - name: Pull Season Averages
         run: |
-          python fetch_euroleague_stats.py --kind season --season E2025 --mode perGame
+          python fetch_euroleague_stats.py --kind season --season 2025 --mode perGame
 
       - name: Build player URLs (για click σε παίκτες)
         run: |
@@ -48,7 +48,7 @@ jobs:
       - name: Pull Gamelogs (Schedule→Boxscore)
         continue-on-error: true  # αν δεν έχει ολοκληρωθεί η υλοποίηση, μην αποτυγχάνει το run
         run: |
-          python fetch_euroleague_stats.py --kind gamelogs --season E2025 --mode perGame
+          python fetch_euroleague_stats.py --kind gamelogs --season 2025 --mode perGame
 
       - name: Commit & Push if changed
         run: |
