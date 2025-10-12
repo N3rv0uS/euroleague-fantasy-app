@@ -254,20 +254,53 @@ def render_players_pergame_table():
     owner = "N3rv0uS"
     repo  = "euroleague-fantasy-app"
     token = st.secrets.get("GH_PAT", "")
-    csv_path = "out/players_2025_perGame.csv"
 
-    # Πάρε το SHA (χρησιμοποιείται σαν cache key)
-    sha = get_file_sha(owner, repo, csv_path, token)
+    pergame_path = "out/players_2025_perGame.csv"
+    urls_path    = "out/player_urls_2025.csv"
 
-    # Κράτα το SHA και στο session_state (θα το χρειαστείς στο auto-refresh)
-    st.session_state["players_csv_sha"] = sha
+    # --- load per-game (με SHA για σωστό cache bust) ---
+    sha_pg = get_file_sha(owner, repo, pergame_path, token)
+    st.session_state["players_csv_sha"] = sha_pg
+    pergame = load_csv_by_sha(owner, repo, pergame_path, sha_pg)
 
-    # Φόρτωσε τα δεδομένα και δείξε τον πίνακα
-    df = load_csv_by_sha(owner, repo, csv_path, sha)
+    # --- load urls csv ---
+    sha_urls = get_file_sha(owner, repo, urls_path, token)
+    urls_df  = load_csv_by_sha(owner, repo, urls_path, sha_urls)
 
+    # --- merge με ασφαλές key (trim/upper/χωρίς κενά) ---
+    def _norm_key(s):
+        return (
+            s.astype(str)
+             .str.strip()
+             .str.upper()
+             .str.replace(r"\s+", "", regex=True)
+        )
+
+    # εντοπισμός σωστού code column στα δύο CSV
+    code_per = "player_code" if "player_code" in pergame.columns else "code"
+    code_url = "player_code" if "player_code" in urls_df.columns else "code"
+
+    pergame["_key"] = _norm_key(pergame[code_per])
+    urls_df["_key"] = _norm_key(urls_df[code_url])
+
+    urls_small = urls_df[["_key", "player_url"]].drop_duplicates("_key")
+    pergame = pergame.merge(urls_small, on="_key", how="left").drop(columns=["_key"])
+
+    # --- εμφάνιση ---
     st.subheader("Players — per game (2025)")
-    st.caption(f"Source: {owner}/{repo} · `{csv_path}` · sha: {sha[:7]}")
-    st.dataframe(df, use_container_width=True)
+    st.caption(f"Source: {owner}/{repo} · `{pergame_path}` sha:{sha_pg[:7]} · urls sha:{sha_urls[:7]}")
+    st.dataframe(
+        pergame,
+        use_container_width=True,
+        column_config={
+            "player_url": st.column_config.LinkColumn("Player page")
+        },
+    )
+
+    # (προαιρετικό μικρό debug για BONGA)
+    # m = pergame["player_name"].astype(str).str.contains("BONGA", case=False, na=False) if "player_name" in pergame.columns else pergame[code_per].astype(str).str.contains("BONGA", case=False, na=False)
+    # st.write(pergame.loc[m, [code_per, "player_name" if "player_name" in pergame.columns else code_per, "player_url"]].head(1))
+
 
 def show_player_page(player_code: str):
     """Δείξε σελίδα παίκτη: gamelogs από CSV ή scraping."""
