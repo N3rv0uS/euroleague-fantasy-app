@@ -27,6 +27,48 @@ qp = st.query_params
 player_code = qp.get("player_code")
 player_code = st.query_params.get("player_code")
 
+# --- Safe scraper for player gamelog table (fallback) ---
+import pandas as pd
+import requests
+
+def scrape_gamelog_table(player_url: str) -> pd.DataFrame:
+    """
+    Προσπαθεί να εξάγει πίνακα gamelogs από τη σελίδα του παίκτη.
+    Επιστρέφει κενό DataFrame αν δεν βρεθεί τίποτα ή σε σφάλμα.
+    """
+    if not player_url or not isinstance(player_url, str) or not player_url.startswith("http"):
+        return pd.DataFrame()
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+        )
+    }
+    try:
+        r = requests.get(player_url, headers=headers, timeout=12)
+        r.raise_for_status()
+    except requests.RequestException:
+        return pd.DataFrame()
+
+    # 1) Δοκίμασε να διαβάσεις όλους τους πίνακες και διάλεξε τον πιο σχετικό
+    try:
+        tables = pd.read_html(r.text)
+    except Exception:
+        return pd.DataFrame()
+
+    # Heuristics: προτίμησε πίνακα που περιέχει PIR/VAL ή PTS/TR/AST
+    best = None
+    for t in tables:
+        cols = [str(c).strip().upper() for c in t.columns]
+        if any(k in cols for k in ["PIR", "VAL"]) and len(t) > 0:
+            best = t
+            break
+        if any(k in cols for k in ["PTS", "TR", "REB", "AST"]) and len(t) > 0:
+            best = t  # keep as fallback if no PIR/VAL found
+
+    return best if isinstance(best, pd.DataFrame) else pd.DataFrame()
+
 def get_file_sha(owner: str, repo: str, path: str, token: str = "") -> str:
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
     headers = {"Authorization": f"token {token}"} if token else {}
