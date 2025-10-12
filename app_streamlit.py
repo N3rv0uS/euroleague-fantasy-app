@@ -224,6 +224,7 @@ if player_code:
         player_name = row.iloc[0].get("Player", str(player_code))
 
         st.title(f"{player_name} — Αναλυτικά (Game-by-Game)")
+        st.write({"player_url": player_url})
 
         gl = pd.DataFrame()
         # 1) δοκίμασε scraping ΜΟΝΟ αν έχουμε έγκυρο URL
