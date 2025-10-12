@@ -50,7 +50,7 @@ jobs:
         continue-on-error: true  # αν δεν έχει ολοκληρωθεί η υλοποίηση, μην αποτυγχάνει το run
         run: |
           python fetch_euroleague_stats.py --kind gamelogs --season 2025 --mode perGame
-
+      
       - name: Commit & Push if changed
         run: |
           set -e
@@ -63,3 +63,16 @@ jobs:
           else
             echo "No changes to commit."
           fi
+          
+      - name: Commit updated CSVs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add out/player_gamelogs_2025_perGame.csv out/players_2025_perGame.csv out/player_urls_2025.csv
+          if git diff --cached --quiet; then
+            echo "No CSV changes"
+          else
+            git commit -m "chore: refresh CSVs"
+            git push
+          fi
+
