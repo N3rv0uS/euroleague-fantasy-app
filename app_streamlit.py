@@ -61,6 +61,46 @@ def gh_list_workflows(owner: str, repo: str, token: str):
     ]
     return workflows
 
+def show_player_detail_from_csv(player_code=None, player_name=None):
+    # χρησιμοποιεί ήδη φορτωμένα pergame/glogs ή φόρτωσέ τα όπως τα φορτώνεις αλλού
+    owner = "N3rv0uS"; repo = "euroleague-fantasy-app"; token = st.secrets.get("GH_PAT","")
+    gl_sha = get_file_sha(owner, repo, "out/player_gamelogs_2025_perGame.csv", token)
+    gl = load_csv_by_sha(owner, repo, "out/player_gamelogs_2025_perGame.csv", gl_sha)
+
+    # normalizer για key
+    def _key(s):
+        return (s.astype(str).str.strip().str.upper().str.replace(r"\s+", "", regex=True))
+
+    code_col_gl = "player_code" if "player_code" in gl.columns else "code"
+
+    # βρες τον κωδικό αν ήρθε μόνο όνομα
+    if player_code is None and player_name is not None:
+        pg_sha = get_file_sha(owner, repo, "out/players_2025_perGame.csv", token)
+        per = load_csv_by_sha(owner, repo, "out/players_2025_perGame.csv", pg_sha)
+        name_col = "player_name" if "player_name" in per.columns else "Player"
+        mask = per[name_col].astype(str).str.contains(str(player_name), case=False, na=False)
+        if mask.any():
+            player_code = per.loc[mask, "player_code" if "player_code" in per.columns else "code"].iloc[0]
+
+    if player_code is None:
+        st.error("Δεν βρέθηκε player_code για εμφάνιση gamelogs.")
+        return
+
+    key = _key(pd.Series([player_code])).iloc[0]
+    gl["_key"] = _key(gl[code_col_gl])
+    rows = gl.loc[gl["_key"] == key].copy()
+
+    # Ταξινόμηση & εμφάνιση
+    for cand in ["game_date", "date", "gamedate"]:
+        if cand in rows.columns:
+            rows[cand] = pd.to_datetime(rows[cand], errors="coerce")
+            rows = rows.sort_values(cand)
+            break
+
+    cols = [c for c in ["game_date","date","gamedate","opponent","home_away","PIR","PTS","TR","AST","STL","BLK","TO","Min"] if c in rows.columns]
+    st.subheader(f"📓 Gamelogs — {player_name or player_code}")
+    st.dataframe(rows[cols] if cols else rows, use_container_width=True)
+
 def get_latest_run_status(owner, repo, wf_id, token):
     """Επιστρέφει το status και το conclusion του πιο πρόσφατου run"""
     url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{wf_id}/runs?per_page=1"
@@ -185,11 +225,24 @@ if player_code:
 
         st.title(f"{player_name} — Αναλυτικά (Game-by-Game)")
 
-        gl = scrape_gamelog_table(player_url)
+        gl = pd.DataFrame()
+        # 1) δοκίμασε scraping ΜΟΝΟ αν έχουμε έγκυρο URL
+        if player_url and isinstance(player_url, str) and player_url.startswith("http"):
+            try:
+                gl = scrape_gamelog_table(player_url)
+            except Exception as e:
+                st.warning(f"Scrape failed: {e}")
         if gl is None or gl.empty:
-            st.warning("Δεν βρέθηκε HTML πίνακας με gamelogs στη σελίδα του παίκτη.")
-            st.markdown(f"[Άνοιγμα επίσημου προφίλ]({player_url})")
-            st.stop()
+            st.info("Χρησιμοποιώ gamelogs από το CSV (fallback).")
+            # προσαρμοσε 'row' / μεταβλητές όπως τις έχεις
+            show_player_detail_from_csv(
+                player_code=row.get("player_code") if 'row' in locals() else None,
+                player_name=row.get("player_name") if 'row' in locals() else None
+            )
+        else:
+            st.dataframe(gl, use_container_width=True)
+            if player_url:
+                st.link_button("🔗 Official page", player_url)
 
         st.dataframe(gl, use_container_width=True)
         for c in ["Πόντοι", "PTS", "PIR", "pir"]:
