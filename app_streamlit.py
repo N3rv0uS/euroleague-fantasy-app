@@ -238,7 +238,8 @@ if player_code:
             # προσαρμοσε 'row' / μεταβλητές όπως τις έχεις
             show_player_detail_from_csv(
                 player_code=row.get("player_code") if 'row' in locals() else None,
-                player_name=row.get("player_name") if 'row' in locals() else None
+                player_name=row.get("player_name") if 'row' in locals() else None,
+                player_url=row.get("player_url")   if 'row' in locals() else None
             )
         else:
             st.dataframe(gl, use_container_width=True)
