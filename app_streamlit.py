@@ -278,11 +278,8 @@ if player_code:
         if gl is None or gl.empty:
             st.info("Χρησιμοποιώ gamelogs από το CSV (fallback).")
             # προσαρμοσε 'row' / μεταβλητές όπως τις έχεις
-            show_player_detail_from_csv(
-                player_code=row.get("player_code") if 'row' in locals() else None,
-                player_name=row.get("player_name") if 'row' in locals() else None,
-                player_url=row.get("player_url")   if 'row' in locals() else None
-            )
+            open_player_detail_by_url(player_url)
+
         else:
             st.dataframe(gl, use_container_width=True)
             if player_url:
@@ -345,6 +342,40 @@ def scrape_gamelog_table(player_url: str):
             continue
 
     return None   # σωστά μέσα στη function
+    
+def open_player_detail_by_url(player_url: str):
+    """Βρίσκει code/name από το per-game DF με βάση το URL και ανοίγει το detail."""
+    if not player_url or not isinstance(player_url, str):
+        st.error("Άκυρο player_url.")
+        return
+
+    owner = "N3rv0uS"; repo = "euroleague-fantasy-app"; token = st.secrets.get("GH_PAT","")
+    pergame_path = "out/players_2025_perGame.csv"
+
+    # Αν ΕΧΕΙΣ ήδη το pergame DF στο scope, ΧΡΗΣΙΜΟΠΟΙΗΣΕ ΤΟ και ΜΗΝ το ξαναφορτώνεις.
+    try:
+        pergame  # noqa: F821
+        df_pg = pergame
+    except NameError:
+        sha_pg = get_file_sha(owner, repo, pergame_path, token)
+        df_pg = load_csv_by_sha(owner, repo, pergame_path, sha_pg)
+
+    code_col = "player_code" if "player_code" in df_pg.columns else ("code" if "code" in df_pg.columns else None)
+    name_col = "player_name" if "player_name" in df_pg.columns else ("Player" if "Player" in df_pg.columns else None)
+
+    if code_col is None:
+        st.error("Δεν βρέθηκε στήλη player_code/code στο per-game CSV.")
+        return
+
+    hit = df_pg.loc[df_pg.get("player_url", pd.Series(index=df_pg.index)).astype(str) == str(player_url)]
+    player_code = hit[code_col].iloc[0] if not hit.empty else None
+    player_name = (hit[name_col].iloc[0] if (not hit.empty and name_col and name_col in hit.columns) else None)
+
+    show_player_detail_from_csv(
+        player_code=player_code,
+        player_name=player_name,
+        player_url=player_url
+    )
 
 # ===== Section renderer για τον πίνακα =====
 def render_players_pergame_table():
