@@ -30,8 +30,8 @@ player_code = st.query_params.get("player_code")
 # --- Safe scraper for player gamelog table (fallback) ---
 import pandas as pd
 import requests
-def open_player_detail_by_url(player_url: str):
-    """Βρίσκει code/name από το per-game DF με βάση το URL και ανοίγει το detail."""
+def open_player_detail_by_url(player_url: str, pergame_df: pd.DataFrame | None = None):
+    """Βρίσκει code/name από το per-game DF με βάση το URL και ανοίγει το detail από CSV/scrape."""
     if not player_url or not isinstance(player_url, str):
         st.error("Άκυρο player_url.")
         return
@@ -39,22 +39,22 @@ def open_player_detail_by_url(player_url: str):
     owner = "N3rv0uS"; repo = "euroleague-fantasy-app"; token = st.secrets.get("GH_PAT","")
     pergame_path = "out/players_2025_perGame.csv"
 
-    # Αν ΕΧΕΙΣ ήδη το pergame DF στο scope, ΧΡΗΣΙΜΟΠΟΙΗΣΕ ΤΟ και ΜΗΝ το ξαναφορτώνεις.
-    try:
-        pergame  # noqa: F821
-        df_pg = pergame
-    except NameError:
+    # χρησιμοποίησε το ήδη φορτωμένο DF, αλλιώς φόρτωσέ το από GitHub με SHA
+    if pergame_df is None:
         sha_pg = get_file_sha(owner, repo, pergame_path, token)
-        df_pg = load_csv_by_sha(owner, repo, pergame_path, sha_pg)
+        if not sha_pg:
+            st.error(f"Δεν βρέθηκε {pergame_path} στο repo.")
+            return
+        pergame_df = load_csv_by_sha(owner, repo, pergame_path, sha_pg)
 
-    code_col = "player_code" if "player_code" in df_pg.columns else ("code" if "code" in df_pg.columns else None)
-    name_col = "player_name" if "player_name" in df_pg.columns else ("Player" if "Player" in df_pg.columns else None)
+    code_col = "player_code" if "player_code" in pergame_df.columns else ("code" if "code" in pergame_df.columns else None)
+    name_col = "player_name" if "player_name" in pergame_df.columns else ("Player" if "Player" in pergame_df.columns else None)
 
-    if code_col is None:
-        st.error("Δεν βρέθηκε στήλη player_code/code στο per-game CSV.")
+    if code_col is None or "player_url" not in pergame_df.columns:
+        st.error("Λείπουν στήλες player_code/code ή player_url στο per-game DataFrame.")
         return
 
-    hit = df_pg.loc[df_pg.get("player_url", pd.Series(index=df_pg.index)).astype(str) == str(player_url)]
+    hit = pergame_df.loc[pergame_df["player_url"].astype(str) == str(player_url)]
     player_code = hit[code_col].iloc[0] if not hit.empty else None
     player_name = (hit[name_col].iloc[0] if (not hit.empty and name_col and name_col in hit.columns) else None)
 
@@ -63,6 +63,7 @@ def open_player_detail_by_url(player_url: str):
         player_name=player_name,
         player_url=player_url
     )
+
     
 def scrape_gamelog_table(player_url: str) -> pd.DataFrame:
     """
@@ -111,11 +112,38 @@ def get_file_sha(owner: str, repo: str, path: str, token: str = "") -> str:
 
 @st.cache_data
 def load_csv_by_sha(owner: str, repo: str, path: str, ref_sha: str) -> pd.DataFrame:
-    """Cache key = ref_sha => κάθε νέο commit στο αρχείο φρεσκάρει αυτόματα τα data."""
-    url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/{path}"
+    """
+    Φορτώνει CSV από το GitHub χρησιμοποιώντας ΑΚΡΙΒΩΣ το ref (sha/tag/branch) που δίνουμε,
+    και όχι σταθερά 'main'. Ελέγχει status & content-type πριν το read_csv.
+    """
+    import requests, io, pandas as pd
+
+    if not ref_sha:
+        raise RuntimeError(f"Missing ref/sha for {path}")
+
+    # Χρησιμοποίησε το SHA (ή tag/branch) στο raw URL
+    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref_sha}/{path}"
     r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    return pd.read_csv(io.StringIO(r.text))
+
+    if r.status_code != 200:
+        raise RuntimeError(f"GitHub raw fetch failed ({r.status_code}) for {path}@{ref_sha}")
+
+    ctype = r.headers.get("Content-Type", "")
+    # Αν δεις text/html κάτι πάει λάθος (συνήθως 404 page χωρίς status)
+    if "text/html" in ctype.lower():
+        # βοήθεια στο debug
+        snippet = r.text[:200].replace("\n", " ")
+        raise RuntimeError(f"Expected CSV but got HTML for {path}@{ref_sha}: {snippet}...")
+
+    # Προσπάθησε κανονικά, μετά δοκίμασε και ';' σε περίπτωση που είναι ;-separated
+    try:
+        return pd.read_csv(io.StringIO(r.text))
+    except Exception:
+        try:
+            return pd.read_csv(io.StringIO(r.text), sep=";")
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse CSV {path}@{ref_sha}: {e}")
+
     
 def gh_list_workflows(owner: str, repo: str, token: str):
     """Επιστρέφει λίστα διαθέσιμων workflows στο repo."""
@@ -310,8 +338,10 @@ if player_code:
                 st.warning(f"Scrape failed: {e}")
         if gl is None or gl.empty:
             st.info("Χρησιμοποιώ gamelogs από το CSV (fallback).")
-            # προσαρμοσε 'row' / μεταβλητές όπως τις έχεις
-            open_player_detail_by_url(player_url)
+
+            open_player_detail_by_url(player_url, pergame_df=pergame)
+
+
 
         else:
             st.dataframe(gl, use_container_width=True)
