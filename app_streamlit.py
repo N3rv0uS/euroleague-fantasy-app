@@ -31,16 +31,17 @@ player_code = st.query_params.get("player_code")
 import pandas as pd
 import requests
 def open_player_detail_by_url(player_url: str, pergame_df: pd.DataFrame | None = None):
-    """Βρίσκει code/name από το per-game DF με βάση το URL και ανοίγει το detail από CSV/scrape."""
     if not player_url or not isinstance(player_url, str):
         st.error("Άκυρο player_url.")
         return
 
-    owner = "N3rv0uS"; repo = "euroleague-fantasy-app"; token = st.secrets.get("GH_PAT","")
-    pergame_path = "out/players_2025_perGame.csv"
-
-    # χρησιμοποίησε το ήδη φορτωμένο DF, αλλιώς φόρτωσέ το από GitHub με SHA
     if pergame_df is None:
+        # δοκίμασε από το session
+        pergame_df = st.session_state.get("pergame_df")
+
+    if pergame_df is None:
+        owner="N3rv0uS"; repo="euroleague-fantasy-app"; token=st.secrets.get("GH_PAT","")
+        pergame_path = "out/players_2025_perGame.csv"
         sha_pg = get_file_sha(owner, repo, pergame_path, token)
         if not sha_pg:
             st.error(f"Δεν βρέθηκε {pergame_path} στο repo.")
@@ -63,6 +64,7 @@ def open_player_detail_by_url(player_url: str, pergame_df: pd.DataFrame | None =
         player_name=player_name,
         player_url=player_url
     )
+
 
     
 def scrape_gamelog_table(player_url: str) -> pd.DataFrame:
@@ -113,36 +115,46 @@ def get_file_sha(owner: str, repo: str, path: str, token: str = "") -> str:
 @st.cache_data
 def load_csv_by_sha(owner: str, repo: str, path: str, ref_sha: str) -> pd.DataFrame:
     """
-    Φορτώνει CSV από το GitHub χρησιμοποιώντας ΑΚΡΙΒΩΣ το ref (sha/tag/branch) που δίνουμε,
-    και όχι σταθερά 'main'. Ελέγχει status & content-type πριν το read_csv.
+    Φορτώνει CSV μέσω GitHub Contents API (όχι raw.githubusercontent.com),
+    ώστε να δουλεύει και σε private repos. Δέχεται ref_sha (commit/tag/branch).
     """
-    import requests, io, pandas as pd
+    import base64, io, requests, pandas as pd
 
     if not ref_sha:
         raise RuntimeError(f"Missing ref/sha for {path}")
 
-    # Χρησιμοποίησε το SHA (ή tag/branch) στο raw URL
-    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref_sha}/{path}"
-    r = requests.get(url, timeout=20)
+    token = st.secrets.get("GH_PAT", "")
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={ref_sha}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}" if token else "",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    r = requests.get(url, headers=headers, timeout=20)
 
+    if r.status_code == 404:
+        raise RuntimeError(f"GitHub contents API 404 for {path}@{ref_sha}")
     if r.status_code != 200:
-        raise RuntimeError(f"GitHub raw fetch failed ({r.status_code}) for {path}@{ref_sha}")
+        raise RuntimeError(f"GitHub contents API {r.status_code} for {path}@{ref_sha}: {r.text[:200]}")
 
-    ctype = r.headers.get("Content-Type", "")
-    # Αν δεις text/html κάτι πάει λάθος (συνήθως 404 page χωρίς status)
-    if "text/html" in ctype.lower():
-        # βοήθεια στο debug
-        snippet = r.text[:200].replace("\n", " ")
-        raise RuntimeError(f"Expected CSV but got HTML for {path}@{ref_sha}: {snippet}...")
+    j = r.json()
+    # Αν είναι directory κλπ
+    if j.get("type") != "file" or "content" not in j:
+        raise RuntimeError(f"Unexpected GitHub contents response for {path}@{ref_sha}")
 
-    # Προσπάθησε κανονικά, μετά δοκίμασε και ';' σε περίπτωση που είναι ;-separated
     try:
-        return pd.read_csv(io.StringIO(r.text))
+        decoded = base64.b64decode(j["content"])
+    except Exception as e:
+        raise RuntimeError(f"Base64 decode failed for {path}@{ref_sha}: {e}")
+
+    # CSV parse
+    text = decoded.decode("utf-8", errors="replace")
+    try:
+        return pd.read_csv(io.StringIO(text))
     except Exception:
-        try:
-            return pd.read_csv(io.StringIO(r.text), sep=";")
-        except Exception as e:
-            raise RuntimeError(f"Failed to parse CSV {path}@{ref_sha}: {e}")
+        # fallback για ;-separated
+        return pd.read_csv(io.StringIO(text), sep=";")
+
 
     
 def gh_list_workflows(owner: str, repo: str, token: str):
