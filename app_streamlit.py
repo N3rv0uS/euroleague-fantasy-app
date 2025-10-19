@@ -339,7 +339,8 @@ if player_code:
         if gl is None or gl.empty:
             st.info("Χρησιμοποιώ gamelogs από το CSV (fallback).")
 
-            open_player_detail_by_url(player_url, pergame_df=pergame)
+            open_player_detail_by_url(player_url)
+
 
 
 
